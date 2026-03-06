@@ -14,6 +14,7 @@ Personal derivatives analytics dashboard. Real-time monitoring of OI, funding, l
 | Doc | Contents |
 |-----|----------|
 | [docs/metrics-guide.md](docs/metrics-guide.md) | Все метрики + торговые стратегии |
+| [docs/TODO.md](docs/TODO.md) | 7 фич (VRP, Alt OI Dom, Vol Cone, Spot Delta, Composite v2, Momentum, Scatter) |
 | [README.md](README.md) | Архитектура, установка, API endpoints |
 | [SPEC.md](SPEC.md) | Полное ТЗ и roadmap |
 
