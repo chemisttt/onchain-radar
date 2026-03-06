@@ -2,7 +2,7 @@
 
 Фичи, которых нет в текущей реализации. Основано на анализе [TradingRiot Analytics](https://analytics.tradingriot.com/resources/platform-guide).
 
-Приоритет: 1 → 2 → 3 → 4 → 5 → 6 → 7
+Приоритет: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
 
 ---
 
@@ -143,3 +143,132 @@
 - Добавить на Momentum tab
 
 **Ref:** docs/metrics-guide.md §17
+
+---
+
+## 8. Momentum Page (per-symbol) — High
+
+**Blocked by:** #6 (Momentum), #7 (DI/VR Scatter), #1 (VRP)
+
+Полноценная Momentum-страница для каждого символа. Ref: [TradingRiot ETH Momentum](https://analytics.tradingriot.com/markets/crypto/eth/momentum).
+
+**Layout (по TradingRiot):**
+
+```
+┌─ Header ──────────────────────────────────────────┐
+│ ETH $2,072  Regime: Bullish  Momentum: +11.9      │
+├─ Metrics cards (1M / 3M / 6M toggle) ─────────────┤
+│ Cross-Sectional Momentum   Pos/Neg/Neut  decile   │
+│ Time Series Momentum       Pos/Neg/Neut  % return  │
+│ Relative Volume            Pos/Neg/Neut  Nx        │
+│ Proximity to 52W High      Pos/Neg/Neut  % away    │
+├─ Charts ──────────────────────────────────────────┤
+│ 1. Price + Momentum histogram (dual-axis)          │
+│ 2. Directional Intensity [-1, +1] time series      │
+│ 3. DI vs Forward Return scatter (10d/30d/60d)      │
+│ 4. Volatility Regime time series                   │
+│ 5. VR vs Forward Return scatter (10d/30d/60d)      │
+├─ Signal Analysis ─────────────────────────────────┤
+│ 6. Price Distribution (implied vs momentum-adjusted)│
+│ 7. Momentum Indicator gauge                        │
+│ 8. Volatility Skew gauge                           │
+└───────────────────────────────────────────────────┘
+```
+
+**Backend:**
+- Новый endpoint: `GET /api/derivatives/{symbol}/momentum-page`
+- Return: momentum metrics, DI series, VR series, price history, scatter data, distribution
+
+**Frontend:**
+- Новый компонент: `MomentumPage.tsx` в `derivatives/`
+- Или расширить существующий `MomentumTab.tsx` до full-page layout
+- Метрики: 4 карточки с цветовой индикацией (Pos=green, Neut=grey, Neg=red)
+- Toggle 1M/3M/6M для метрик
+
+**Metric cards:**
+
+| Метрика | Pos | Neut | Neg |
+|---------|-----|------|-----|
+| Cross-Sectional | decile ≥ 7 | 4-6 | ≤ 3 |
+| Time Series | return > 0 | ~0 | < 0 |
+| Relative Volume | > 1.5x | 0.8-1.5x | < 0.8x |
+| 52W High Proximity | < 5% away | 5-20% | > 20% |
+
+**Реальные данные ETH (март 2026):**
+- Momentum: +11.9, Z-Score: 0.37, Historical Avg: -7.9
+- Cross-Sectional: Pos (decile 7)
+- Time Series: Pos (+6.5%)
+- Relative Volume: Neut (0.9x)
+- 52W High Proximity: Neg (+42.9% away)
+- DI scatter R²: 0.006 (n=1798)
+- VR scatter R²: 0.006 (n=1770)
+
+---
+
+## 9. Price Distribution (Implied vs Momentum-Adjusted) — Medium
+
+**Blocked by:** #6 (Momentum), #1 (VRP)
+
+Сравнение implied distribution (из IV) с momentum-adjusted distribution.
+
+**Ref: TradingRiot ETH данные:**
+```
+Horizons: 7d / 10d / 14d / 30d / 60d
+
+Implied ±20.9%:  1σ $1,640-$2,505,  2σ $1,207-$2,937
+TR-adj  ±22.4%:  1σ $1,623-$2,562,  2σ $1,153-$3,032
+```
+
+**Backend:**
+- Новая функция в `options_service.py` или `momentum_service.py`
+- Implied: `1σ = price × (1 ± IV/100 × √(days/365))`
+- Momentum-adjusted: коррекция mean на основе momentum score + DI
+- Return: `{horizon: {implied: {low1, high1, low2, high2}, adjusted: {...}}}`
+
+**Формулы:**
+```
+1σ_low  = price × (1 - IV/100 × √(days/365))
+1σ_high = price × (1 + IV/100 × √(days/365))
+2σ      = аналогично с множителем 2
+
+Momentum adjustment:
+drift           = momentum_score / 100 × avg_daily_return × days
+adjusted_center = price × (1 + drift)
+adjusted_vol    = IV × (1 + vol_regime_factor)
+```
+
+**Frontend:**
+- Новый компонент: `PriceDistribution.tsx`
+- Bell curve / bar chart: implied (полупрозрачный) vs adjusted (solid)
+- Horizon selector: 7d / 10d / 14d / 30d / 60d
+- Текст: "Implied ±X%, Adjusted ±Y%, 1σ $A-$B, 2σ $C-$D"
+- BTC/ETH only (нужен IV)
+
+---
+
+## 10. Momentum/Skew Signal Gauges — Low
+
+**Blocked by:** #6 (Momentum)
+
+Визуальные gauge-индикаторы для быстрой оценки.
+
+**Ref: TradingRiot ETH:**
+```
+TradingRiot Indicator:
+  [Negative ──── Neutral ──── Positive]
+  Score: +11.9 | Z-Score: 0.37 | Avg: -7.9 | 30d Δ: +97.0
+
+Volatility Skew:
+  [Bearish ──── Neutral ──── Bullish]
+  Score: 65.6% | Skew: 7.72 | Z-Score: 0.93 | Avg: 4.04 | 30d Δ: -3.66
+```
+
+**Frontend:**
+- Новый компонент: `SignalGauge.tsx` — reusable horizontal gauge
+- Props: `{label, value, min, max, zones: [{from, to, color}], stats: {score, zScore, avg, change30d}}`
+- Momentum gauge: зоны Negative/Neutral/Positive, тики на ±10 и ±70
+- Skew gauge: зоны Bearish/Neutral/Bullish
+
+**Backend:**
+- Данные уже будут из momentum_service (#6) и options_service
+- Skew: текущий skew_25d, skew_z, historical avg, 30d change — всё уже в daily_volatility
