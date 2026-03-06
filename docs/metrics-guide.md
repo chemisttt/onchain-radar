@@ -18,8 +18,14 @@
 10. [Momentum (IV/RV/Skew)](#10-momentum-ivrvskew)
 11. [Orderbook Depth & Skew](#11-orderbook-depth--skew)
 12. [Global Dashboard](#12-global-dashboard)
-13. [Appendix A: Формулы](#appendix-a-формулы)
-14. [Appendix B: Интервалы обновления](#appendix-b-интервалы-обновления)
+13. [Variance Risk Premium (VRP)](#13-variance-risk-premium-vrp)
+14. [Volatility Cone](#14-volatility-cone)
+15. [Spot Volume Delta](#15-spot-volume-delta)
+16. [Altcoin OI Dominance](#16-altcoin-oi-dominance)
+17. [Momentum Indicator](#17-momentum-indicator)
+18. [Appendix A: Формулы](#appendix-a-формулы)
+19. [Appendix B: Интервалы обновления](#appendix-b-интервалы-обновления)
+20. [Appendix C: Roadmap метрик](#appendix-c-roadmap-метрик)
 
 ---
 
@@ -380,6 +386,10 @@ total_oi = binance_oi_usd
 composite_z = (oi_zscore + funding_zscore + liq_zscore) / 3
 ```
 
+> **Ref: TradingRiot** использует 4 компонента (OI + Funding + Skew + VRP) с SMA-5
+> сглаживанием. Наш composite использует 3 (OI + Funding + Liq). После реализации
+> VRP (см. §13) можно расширить до 4-компонентного composite с опциональным SMA.
+
 ### 6 режимов (цветовая шкала)
 
 ```
@@ -665,6 +675,17 @@ skew_25d = IV(25δ put) - IV(25δ call)
   └──────────────────────────────────────────────┘
 ```
 
+### Крипто-специфика скью (отличие от equities)
+
+В отличие от акций, где skew стабильно положительный (путы дороже из-за crash risk), крипто-skew **часто меняет знак**:
+- Положительный skew = спрос на downside protection (страх)
+- Отрицательный skew = спекуляция на рост (коллы дороже путов)
+- Flip из отрицательного в положительный часто совпадает с локальными топами
+
+> **Ref: TradingRiot** отмечает что крипто-skew "frequently flips" в отличие
+> от equities где skew "persistently positive". Это делает skew_z более
+> информативным в крипте — экстремумы в обе стороны значимы.
+
 ---
 
 ## 11. Orderbook Depth & Skew
@@ -747,6 +768,11 @@ risk_appetite = AVG(oi_z + funding_z + liq_z) / 3
                за выбранный период (default 365 дней)
 ```
 
+> **Альтернативный подход (TradingRiot):** Risk Appetite = altcoin OI dominance.
+> Высокая доля OI в альтах = капитал течёт в рисковые активы (risk-on).
+> Низкая доля = капитал концентрируется в BTC (risk-off).
+> См. TODO: Altcoin OI Dominance (§16).
+
 ### Как читать
 
 ```
@@ -803,6 +829,314 @@ risk_appetite = AVG(oi_z + funding_z + liq_z) / 3
   │  Торговать только BTC/ETH (ликвидность)    │
   │  Альты выравняются следом                  │
   └────────────────────────────────────────────┘
+```
+
+---
+
+## 13. Variance Risk Premium (VRP)
+
+> **Статус: TODO** — данные (IV, RV) уже собираются для BTC/ETH. Нужен расчёт VRP и z-score.
+
+### Что это
+Разница между implied volatility (ожидание рынка) и realized volatility (фактическое движение). Положительный VRP = опционы переоценены, отрицательный = недооценены.
+
+### Формула
+
+```
+VRP = IV_30d - RV_30d
+VRP_z = z-score(VRP, window=365)
+```
+
+### Почему это работает
+
+VRP стабильно положительный — это "страховая премия". Инвесторы переплачивают за защиту, создавая систематический edge для продавцов vol.
+
+```
+  Исторические средние (TradingRiot):
+  ──────────────────────────────────────
+  SPY:     IV ~18%, RV ~15%, VRP ~3%
+  BTC/ETH: IV ~55-70%, RV ~50-65%, VRP ~5-10%
+
+  Крипто VRP выше из-за:
+  1. Менее зрелый опционный рынок
+  2. Больший спрос на хеджирование
+  3. 24/7 торговля (365 дней для annualization)
+```
+
+### Как читать
+
+```
+  VRP (%)
+  +20 ┤
+      │       ╭──╮
+  +10 ┤  ╭───╯  ╰───   ← VRP высокий: опционы дорогие
+      │ ╭╯              = можно продавать vol
+   0  ┤╯─────────────── ← нейтраль
+      │          ╭─╮
+  -10 ┤─────────╯ ╰──  ← VRP отрицательный: опционы дешёвые
+      │                  = можно покупать vol
+  -20 ┤
+      └──────────────── время
+
+  VRP Z-Score:
+  z > +2  → VRP экстремально высокий ("rich vol")
+  z < -2  → VRP экстремально низкий ("cheap vol")
+```
+
+### Стратегия: VRP Mean Reversion
+
+```
+  ┌──────────────────────────────────────────────────┐
+  │  VRP_z > +2 ("Rich Vol"):                        │
+  │  Опционы сильно дороже реального движения        │
+  │  → Sell vol: продавать стрэддлы/стрэнглы         │
+  │  → Или направленно: VRP_z > +2 + skew_z > +2    │
+  │    = панический хедж → лонг на зоне интереса     │
+  ├──────────────────────────────────────────────────┤
+  │  VRP_z < -2 ("Cheap Vol"):                       │
+  │  Опционы дешевле реального движения              │
+  │  → Buy vol: покупать стрэддлы перед движением    │
+  │  → Или готовиться к breakout (vol expansion)     │
+  ├──────────────────────────────────────────────────┤
+  │  Важно:                                          │
+  │  • Не продавать vol в rising IV — VRP может быть  │
+  │    высоким но IV ещё растёт (кластеризация vol)   │
+  │  • Ждать признаки mean reversion (IV начал падать)│
+  │  • Крипто: VRP > 10% — нормально, не аномалия    │
+  └──────────────────────────────────────────────────┘
+```
+
+---
+
+## 14. Volatility Cone
+
+> **Статус: TODO** — нужен расчёт percentile bands для RV на разных lookback periods.
+
+### Что это
+Статистическое распределение исторической realized volatility на разных временных горизонтах. Показывает где текущая RV находится относительно исторического диапазона.
+
+### Как устроен
+
+```
+  RV (annualized %)
+  100 ┤
+      │  ╭───── 90th percentile
+   80 ┤ ╱    ╭── 75th
+      │╱   ╱
+   60 ┤  ╱   ╭── 50th (median)
+      │ ╱  ╱
+   40 ┤╱ ╱   ╭── 25th
+      │ ╱  ╱
+   20 ┤╱ ╱   ╭── 10th percentile
+      │╱ ╱  ╱
+    0 ┤─┴──┴──┴──┴──┴──┴──
+      7d  14d 30d 60d 90d 180d
+           Lookback period
+
+  ★ = текущая RV на каждом горизонте
+
+  Если ★ около дна конуса → vol исторически низкая → expansion ahead
+  Если ★ около вершины → vol исторически высокая → compression ahead
+```
+
+### Стратегия
+
+```
+  ┌────────────────────────────────────────────────┐
+  │  Текущая RV < 10th pctl на всех горизонтах:    │
+  │  → Vol compression extreme                     │
+  │  → Breakout imminent (направление неясно)      │
+  │  → Buy vol (straddles) или ждать сигнал OI/Fund│
+  ├────────────────────────────────────────────────┤
+  │  Текущая RV > 90th pctl на коротких горизонтах: │
+  │  → Vol spike, вероятно каскадные ликвидации     │
+  │  → Проверить liq_z — если > +2, каскад идёт    │
+  │  → После каскада vol вернётся к median          │
+  └────────────────────────────────────────────────┘
+```
+
+---
+
+## 15. Spot Volume Delta
+
+> **Статус: TODO** — требует taker buy/sell volume с бирж. Binance предоставляет через `takerlongshortRatio`.
+
+### Что это
+Чистая разница между агрессивными покупками и продажами на споте. Buy = ордер поднял ask (taker buy), Sell = ордер ударил bid (taker sell).
+
+### Формула
+
+```
+spot_volume_delta = taker_buy_volume - taker_sell_volume
+```
+
+### Как читать
+
+```
+  Spot Volume Delta ($M)
+  +50 ┤
+      │    │         ← агрессивные покупки доминируют
+  +25 ┤    │    │
+      │    │    │
+    0 ┤────┼────┼──── ← баланс
+      │         │  │
+  -25 ┤            │  ← агрессивные продажи доминируют
+      │            │
+  -50 ┤
+      └──────────────── время
+```
+
+### Стратегия
+
+```
+  ┌──────────────────────────────────────────────────────┐
+  │  Persistent positive delta + OI rising:               │
+  │  = Спот-покупки + новые позиции = органический спрос  │
+  │  → Сильный бычий сигнал                              │
+  ├──────────────────────────────────────────────────────┤
+  │  Positive delta + OI falling:                         │
+  │  = Покупки закрывают шорты, но новых позиций нет      │
+  │  → Short squeeze, не органический рост                │
+  ├──────────────────────────────────────────────────────┤
+  │  Negative delta + price rising:                       │
+  │  = Цена растёт на funding/perp, спот продаёт          │
+  │  → Дивергенция, потенциальный разворот вниз           │
+  └──────────────────────────────────────────────────────┘
+```
+
+---
+
+## 16. Altcoin OI Dominance
+
+> **Статус: TODO** — данные OI по 30 символам уже есть. Нужен расчёт доли BTC в total OI.
+
+### Что это
+Доля BTC в суммарном OI всех 30 символов. Показывает куда течёт спекулятивный капитал.
+
+### Формула
+
+```
+btc_oi_dominance = btc_oi_usd / total_oi_all_symbols × 100
+alt_oi_dominance = 100 - btc_oi_dominance
+```
+
+### Как читать
+
+```
+  Alt OI Dominance (%)
+  70 ┤
+     │    ╭──╮
+  60 ┤───╯  ╰──────   ← капитал в альтах = risk-on
+     │               ╰╮
+  50 ┤─────────────────╰── ← баланс
+     │
+  40 ┤────────────────────  ← капитал в BTC = risk-off
+     │
+  30 ┤
+     └──────────────────── время
+```
+
+### Стратегия
+
+```
+  ┌────────────────────────────────────────────────┐
+  │  Alt dominance > 65% + funding_z > +1.5:       │
+  │  = Альты перегреты, спекуляция на максимуме    │
+  │  → Сокращать альт-экспозицию                   │
+  │  → Ротация обратно в BTC вероятна              │
+  ├────────────────────────────────────────────────┤
+  │  Alt dominance < 40% + OI global z < -1:       │
+  │  = Капитал ушёл в BTC/кэш, альты вымыты       │
+  │  → Искать лонг-сетапы в топ-альтах             │
+  │  → Rotation из BTC в альты на горизонте        │
+  ├────────────────────────────────────────────────┤
+  │  Быстрый рост alt dominance (>5% за неделю):   │
+  │  = "Alt season" начинается                     │
+  │  → Агрессивно торговать альты                  │
+  │  → Но следить за funding — перегрев быстро     │
+  └────────────────────────────────────────────────┘
+```
+
+> **Ref: TradingRiot** использует alt OI dominance как primary Risk Appetite
+> индикатор вместо composite z-score average. Оба подхода валидны,
+> можно использовать параллельно.
+
+---
+
+## 17. Momentum Indicator
+
+> **Статус: TODO** — требует отдельного сервиса. Самый сложный из недостающих компонентов.
+
+### Что это
+Multi-component momentum score [-100, +100], синтезирующий несколько трендовых сигналов. Определяет трендовые режимы, exhaustion на экстремумах, дивергенции с ценой.
+
+### Компоненты (по TradingRiot)
+
+```
+  1. Cross-Sectional Momentum Decile
+     Ранг 1-месячного return среди всех peers (30 символов)
+     Decile 10 = top-10% performers
+
+  2. Time-Series Momentum Decile
+     Ранг 1-месячного return относительно собственной истории
+     Decile 10 = top-10% исторических returns
+
+  3. Relative Momentum Decile
+     Ранг performance vs benchmark (BTC для альтов)
+     Decile 10 = значительно outperformит BTC
+
+  4. Directional Intensity [-1, +1]
+     Консистентность направления цены за rolling window
+     +1 = все дни положительные, -1 = все дни отрицательные
+
+  5. Volatility Regime
+     Текущая short-term vol vs smoothed trend
+     Positive = vol expanding, negative = vol contracting
+```
+
+### Пороги
+
+```
+  Momentum Value
+  +100 ┤
+       │
+  +70  ┤ · · · · · · · ·  ← OVERBOUGHT (синий)
+       │  ████████████
+  +10  ┤ ─ ─ ─ ─ ─ ─ ─ ─  ← BULLISH threshold
+       │
+    0  ┤─────────────────── ← NEUTRAL
+       │
+  -10  ┤ ─ ─ ─ ─ ─ ─ ─ ─  ← BEARISH threshold
+       │  ████████████
+  -70  ┤ · · · · · · · ·  ← OVERSOLD (жёлтый)
+       │
+  -100 ┤
+
+  Screener фильтры:
+  Bullish: все 3 deciles ≥ 7 AND momentum > +10
+  Bearish: все 3 deciles ≤ 3 AND momentum < -10
+```
+
+### Стратегия
+
+```
+  ┌──────────────────────────────────────────────────┐
+  │  Momentum > +70 (overbought):                    │
+  │  = Exhaustion zone, не добавлять лонги            │
+  │  → Ждать crossover вниз через MA-13 для шорта    │
+  ├──────────────────────────────────────────────────┤
+  │  Momentum < -70 (oversold):                      │
+  │  = Capitulation zone                             │
+  │  → Ждать crossover вверх через MA-13 для лонга   │
+  ├──────────────────────────────────────────────────┤
+  │  Все 3 deciles ≥ 7 + momentum > +10:             │
+  │  = Тренд подтверждён по всем осям                │
+  │  → Momentum confirmation для existing setups      │
+  ├──────────────────────────────────────────────────┤
+  │  DI vs Forward Return scatter (аналог наших Z-    │
+  │  scatter plots): показывает R² между directional  │
+  │  intensity и будущим return на 10/30/60d          │
+  └──────────────────────────────────────────────────┘
 ```
 
 ---
@@ -885,6 +1219,33 @@ APR = rate_8h × 3 × 365 × 100%
 risk = AVG((oi_z + funding_z + liq_z) / 3) по top-10 по OI
 ```
 
+### Variance Risk Premium (TODO)
+
+```
+VRP    = IV_30d - RV_30d
+VRP_z  = z-score(VRP, window=365)
+```
+
+### Altcoin OI Dominance (TODO)
+
+```
+btc_dom = btc_oi / Σ(all_oi) × 100
+alt_dom = 100 - btc_dom
+```
+
+### Spot Volume Delta (TODO)
+
+```
+delta = taker_buy_vol - taker_sell_vol
+```
+
+### Directional Intensity (TODO)
+
+```
+DI = (positive_days - negative_days) / total_days   over rolling window
+Range: [-1, +1]
+```
+
 ---
 
 ## Appendix B: Интервалы обновления
@@ -902,6 +1263,28 @@ risk = AVG((oi_z + funding_z + liq_z) / 3) по top-10 по OI
 | OB Skew Z-Score history | 288 readings (24h) | rolling |
 | Liq Events cleanup | hourly | > 7 days deleted |
 | Funding snapshots retention | 7 дней | — |
+
+---
+
+---
+
+## Appendix C: Roadmap метрик
+
+Фичи, которых нет в текущей реализации. Отсортированы по сложности.
+
+| # | Фича | Сложность | Данные | Описание |
+|---|------|-----------|--------|----------|
+| 1 | **VRP (IV - RV)** | Низкая | IV и RV уже собираются | Добавить VRP = IV - RV, VRP z-score. Отображать на MomentumTab. BTC/ETH only |
+| 2 | **Altcoin OI Dominance** | Низкая | OI всех 30 символов есть | btc_oi / total_oi. Добавить на GlobalDashboard как альтернативный risk appetite |
+| 3 | **Volatility Cone** | Средняя | Price history есть | Расчёт RV на 7/14/30/60/90/180d + percentile bands. Новый чарт на MomentumTab |
+| 4 | **Composite Regime v2** | Средняя | После VRP | Расширить composite до 4 компонентов (+ VRP), добавить SMA-5 smoothing |
+| 5 | **Spot Volume Delta** | Средняя | Binance `takerlongshortRatio` | Новый polling loop в derivatives_service, новый чарт на SymbolDetail |
+| 6 | **Momentum Indicator** | Высокая | Price history + новые расчёты | Cross-sectional/time-series/relative deciles, DI, vol regime. Новый сервис |
+| 7 | **DI/VR vs Forward Return** | Средняя | После Momentum | Scatter plots аналогичные текущим Z-scatter, но для DI и vol regime |
+
+**Приоритет: 1 → 2 → 3 → 5 → 4 → 6 → 7**
+
+VRP и Alt OI Dominance можно реализовать за 1-2 часа — данные уже есть.
 
 ---
 
