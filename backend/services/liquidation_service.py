@@ -279,7 +279,8 @@ async def compute_liq_clusters(symbol: str) -> dict:
     bin_size = current_price * 0.005  # 0.5% bins
     if bin_size <= 0:
         bin_size = 1
-    liq_bins: dict[int, list[float]] = {}  # bin_idx → [long_vol, short_vol]
+    # bin_idx → {lev: [long_vol, short_vol]}
+    liq_bins: dict[int, dict[int, list[float]]] = {}
 
     prev_oi = 0
     for row in oi_rows:
@@ -312,17 +313,19 @@ async def compute_liq_clusters(symbol: str) -> dict:
 
             if long_vol > 0 and _survived(ts, long_liq, is_long=True):
                 b = int(long_liq / bin_size)
-                entry = liq_bins.setdefault(b, [0.0, 0.0])
+                entry = liq_bins.setdefault(b, {}).setdefault(lev, [0.0, 0.0])
                 entry[0] += long_vol
 
             if short_vol > 0 and _survived(ts, short_liq, is_long=False):
                 b = int(short_liq / bin_size)
-                entry = liq_bins.setdefault(b, [0.0, 0.0])
+                entry = liq_bins.setdefault(b, {}).setdefault(lev, [0.0, 0.0])
                 entry[1] += short_vol
 
     # 4. Convert bins to clusters, filter by proximity
     clusters = []
-    for b, (lvol, svol) in liq_bins.items():
+    for b, lev_data in liq_bins.items():
+        lvol = sum(v[0] for v in lev_data.values())
+        svol = sum(v[1] for v in lev_data.values())
         total = lvol + svol
         if total < 1e6:
             continue
@@ -330,6 +333,8 @@ async def compute_liq_clusters(symbol: str) -> dict:
         dist_pct = (bin_price - current_price) / current_price * 100
         if abs(dist_pct) > 15:
             continue
+        # Dominant leverage = tier with most volume in this bin
+        dominant_lev = max(lev_data, key=lambda k: sum(lev_data[k]))
         clusters.append({
             "level_price": round(bin_price, 2),
             "volume_usd": round(total, 0),
@@ -337,6 +342,7 @@ async def compute_liq_clusters(symbol: str) -> dict:
             "short_vol": round(svol, 0),
             "direction": "long" if lvol > svol else "short",
             "distance_pct": round(dist_pct, 2),
+            "leverage": dominant_lev,
         })
 
     clusters.sort(key=lambda x: x["volume_usd"], reverse=True)
@@ -354,7 +360,7 @@ async def _compute_theoretical_levels(symbol: str) -> list[dict]:
             "price": c["level_price"],
             "long_vol": c["long_vol"],
             "short_vol": c["short_vol"],
-            "leverage": 0,  # mixed
+            "leverage": c.get("leverage", 25),
         })
     return levels
 
