@@ -726,6 +726,8 @@ async def check_alerts() -> list[dict]:
         confluence, factors = _compute_confluence(cur, velocities, liq_prox, is_bullish)
 
         # ── DIRECTIONAL ALERTS (backtest-aligned thresholds) ──
+        # Signal families: only fire strongest timeframe (5d > 3d > 1d)
+        fired_families: set[str] = set()
 
         # === SHORT signals ===
 
@@ -763,8 +765,41 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        # 3. DIVERGENCE SQUEEZE 1D — OI↑ Price↓ (новые шорты/давление)
-        if oi_chg > 3 and price_chg < -1:
+        # DIVERGENCE SQUEEZE family — strongest timeframe wins (5d > 3d > 1d)
+        if oi_chg_5d > 8 and price_chg_5d < -3:
+            fired_families.add("div_squeeze")
+            tier = _score_to_tier(confluence)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "div_squeeze_5d", sym, short_sym, "ДИВЕРГЕНЦИЯ 5D — OI↑ Price↓",
+                    cur, velocities, confluence, tier, factors,
+                    indicators=[
+                        f"OI +{oi_chg_5d:.1f}% при цене {price_chg_5d:+.1f}% за 5 дней",
+                        "Сильное давление — тренд вниз подтверждён",
+                    ],
+                    action=[
+                        "Шорт при любом откате, не ловить нож",
+                    ],
+                ))
+
+        if "div_squeeze" not in fired_families and oi_chg_3d > 5 and price_chg_3d < -2:
+            fired_families.add("div_squeeze")
+            tier = _score_to_tier(confluence)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "div_squeeze_3d", sym, short_sym, "ДИВЕРГЕНЦИЯ 3D — OI↑ Price↓",
+                    cur, velocities, confluence, tier, factors,
+                    indicators=[
+                        f"OI +{oi_chg_3d:.1f}% при цене {price_chg_3d:+.1f}% за 3 дня",
+                        "Устойчивое давление — продолжение снижения вероятно",
+                    ],
+                    action=[
+                        "Шорт при откате к сопротивлению / верхней трендовой",
+                    ],
+                ))
+
+        if "div_squeeze" not in fired_families and oi_chg > 3 and price_chg < -1:
+            fired_families.add("div_squeeze")
             tier = _score_to_tier(confluence)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -780,40 +815,25 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        # 4. DIVERGENCE SQUEEZE 3D — медленное накопление
-        if oi_chg_3d > 5 and price_chg_3d < -2:
+        # DIVERGENCE TOP family — strongest timeframe wins (3d > 1d)
+        if oi_chg_3d < -5 and price_chg_3d > 3:
+            fired_families.add("div_top")
             tier = _score_to_tier(confluence)
             if tier:
                 alerts.append(_build_directional_alert(
-                    "div_squeeze_3d", sym, short_sym, "ДИВЕРГЕНЦИЯ 3D — OI↑ Price↓",
+                    "div_top_3d", sym, short_sym, "ДИВЕРГЕНЦИЯ ТОП 3D — OI↓ Price↑",
                     cur, velocities, confluence, tier, factors,
                     indicators=[
-                        f"OI +{oi_chg_3d:.1f}% при цене {price_chg_3d:+.1f}% за 3 дня",
-                        "Устойчивое давление — продолжение снижения вероятно",
+                        f"OI {oi_chg_3d:+.1f}% при росте {price_chg_3d:+.1f}% за 3 дня",
+                        "Устойчивый выход позиций при росте — топ близко",
                     ],
                     action=[
-                        "Шорт при откате к сопротивлению / верхней трендовой",
+                        "Сокращать лонги, искать шорт от сопротивления",
                     ],
                 ))
 
-        # 5. DIVERGENCE SQUEEZE 5D — длительное
-        if oi_chg_5d > 8 and price_chg_5d < -3:
-            tier = _score_to_tier(confluence)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "div_squeeze_5d", sym, short_sym, "ДИВЕРГЕНЦИЯ 5D — OI↑ Price↓",
-                    cur, velocities, confluence, tier, factors,
-                    indicators=[
-                        f"OI +{oi_chg_5d:.1f}% при цене {price_chg_5d:+.1f}% за 5 дней",
-                        "Сильное давление — тренд вниз подтверждён",
-                    ],
-                    action=[
-                        "Шорт при любом откате, не ловить нож",
-                    ],
-                ))
-
-        # 6. DIVERGENCE TOP 1D — OI↓ Price↑ (умные деньги выходят)
-        if oi_chg < -3 and price_chg > 2:
+        if "div_top" not in fired_families and oi_chg < -3 and price_chg > 2:
+            fired_families.add("div_top")
             tier = _score_to_tier(confluence)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -826,22 +846,6 @@ async def check_alerts() -> list[dict]:
                     action=[
                         "НЕ добавлять лонги на текущих уровнях",
                         "Искать шорт от сопротивления",
-                    ],
-                ))
-
-        # 7. DIVERGENCE TOP 3D
-        if oi_chg_3d < -5 and price_chg_3d > 3:
-            tier = _score_to_tier(confluence)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "div_top_3d", sym, short_sym, "ДИВЕРГЕНЦИЯ ТОП 3D — OI↓ Price↑",
-                    cur, velocities, confluence, tier, factors,
-                    indicators=[
-                        f"OI {oi_chg_3d:+.1f}% при росте {price_chg_3d:+.1f}% за 3 дня",
-                        "Устойчивый выход позиций при росте — топ близко",
-                    ],
-                    action=[
-                        "Сокращать лонги, искать шорт от сопротивления",
                     ],
                 ))
 
@@ -913,8 +917,25 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        # 12. LIQ FLUSH — каскад ликвидаций + OI сброс (relaxed: 1.5/-3/-2)
-        if liq_z > 1.5 and price_chg < -3 and oi_chg < -2 and trend != "down":
+        # LIQ FLUSH family — strongest timeframe wins (3d > 1d)
+        if liq_z > 1.5 and price_chg_3d < -5 and oi_chg_3d < -5 and trend != "down":
+            fired_families.add("liq_flush")
+            tier = _score_to_tier(confluence)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "liq_flush_3d", sym, short_sym, "LIQ FLUSH 3D — затяжной слив",
+                    cur, velocities, confluence, tier, factors,
+                    indicators=[
+                        f"Цена {price_chg_3d:+.1f}%, OI {oi_chg_3d:+.1f}% за 3 дня",
+                        "Затяжной слив — очищение рынка завершается",
+                    ],
+                    action=[
+                        "Искать лонг от поддержки после стабилизации",
+                    ],
+                ))
+
+        if "liq_flush" not in fired_families and liq_z > 1.5 and price_chg < -3 and oi_chg < -2 and trend != "down":
+            fired_families.add("liq_flush")
             tier = _score_to_tier(confluence)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -927,22 +948,6 @@ async def check_alerts() -> list[dict]:
                     action=[
                         "НЕ шортить на минимумах — сброс уже произошёл",
                         "Ждать стабилизацию, затем лонг",
-                    ],
-                ))
-
-        # 13. LIQ FLUSH 3D — медленный слив
-        if liq_z > 1.5 and price_chg_3d < -5 and oi_chg_3d < -5 and trend != "down":
-            tier = _score_to_tier(confluence)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "liq_flush_3d", sym, short_sym, "LIQ FLUSH 3D — затяжной слив",
-                    cur, velocities, confluence, tier, factors,
-                    indicators=[
-                        f"Цена {price_chg_3d:+.1f}%, OI {oi_chg_3d:+.1f}% за 3 дня",
-                        "Затяжной слив — очищение рынка завершается",
-                    ],
-                    action=[
-                        "Искать лонг от поддержки после стабилизации",
                     ],
                 ))
 
