@@ -24,6 +24,8 @@ export interface BacktestAlert {
   return_1d: number | null
   return_3d: number | null
   return_7d: number | null
+  mfe_return?: number | null
+  mfe_price?: number | null
   simulated?: boolean
   zscores?: { oi: number; funding: number; liq: number; volume: number }
 }
@@ -36,6 +38,7 @@ export interface BacktestStats {
   wins: number
   win_rate: number
   avg_return: number
+  by_type?: Record<string, { count: number; win_rate: number; avg_return: number; pf: number }>
 }
 
 export interface PriceStructure {

@@ -6,7 +6,7 @@ simulated alerts with actual forward returns computed from price data.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from db import get_db
 
@@ -22,6 +22,7 @@ Z_WINDOW = 365
 
 MIN_POINTS = 30
 COOLDOWN_DAYS = 1  # per symbol:type
+CLUSTER_GAP_DAYS = 2  # merge same-direction signals within N days
 
 
 def _zscore(values: list[float]) -> float:
@@ -33,6 +34,16 @@ def _zscore(values: list[float]) -> float:
     if std < 1e-10:
         return 0.0
     return (values[-1] - mean) / std
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2
 
 
 def _score_to_tier(score: int) -> str | None:
@@ -48,8 +59,12 @@ def _score_to_tier(score: int) -> str | None:
 def _compute_confluence(
     oi_z: float, fund_z: float, liq_z: float, vol_z: float,
     price_momentum: float, z_accel: float,
+    liq_long_z: float, liq_short_z: float,
+    rv_regime: str | None,
+    direction: str | None = None,
+    funding_rate: float = 0.0,
 ) -> tuple[int, list[str]]:
-    """Confluence scoring with momentum and z-acceleration."""
+    """Confluence scoring with momentum, z-acceleration, liq directional, RV regime."""
     score = 0
     factors = []
 
@@ -89,16 +104,65 @@ def _compute_confluence(
         score += 1
         factors.append(f"Z-accel {z_accel:+.1f}")
 
+    # 9. Liq directional (one side getting liquidated hard)
+    if liq_long_z > Z_MODERATE or liq_short_z > Z_MODERATE:
+        score += 1
+        side = "longs" if liq_long_z > liq_short_z else "shorts"
+        factors.append(f"Liq {side} spike")
+
+    # 10. RV regime (extreme vol = regime shift)
+    if rv_regime in ("low", "high"):
+        score += 1
+        factors.append(f"RV {rv_regime}")
+
+    # Bonus: funding direction confirmation
+    if direction == "short" and funding_rate > 0:
+        score += 1
+        factors.append("Fund confirms short")
+    elif direction == "long" and funding_rate < 0:
+        score += 1
+        factors.append("Fund confirms long")
+
     return score, factors
+
+
+def _cluster_alerts(alerts: list[dict], max_gap_days: int = CLUSTER_GAP_DAYS) -> list[dict]:
+    """Merge nearby same-direction signals, keeping highest confluence."""
+    if len(alerts) <= 1:
+        return alerts
+
+    alerts.sort(key=lambda a: a["fired_at"])
+    clustered: list[dict] = []
+
+    for alert in alerts:
+        merged = False
+        for existing in clustered:
+            if existing["direction"] != alert["direction"]:
+                continue
+            d1 = datetime.fromisoformat(existing["fired_at"])
+            d2 = datetime.fromisoformat(alert["fired_at"])
+            if abs((d2 - d1).days) <= max_gap_days:
+                # Keep the one with higher confluence
+                if alert["confluence"] > existing["confluence"]:
+                    # Replace but keep the earlier date for time alignment
+                    idx = clustered.index(existing)
+                    clustered[idx] = alert
+                merged = True
+                break
+        if not merged:
+            clustered.append(alert)
+
+    return clustered
 
 
 async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
     """Simulate historical alerts for a symbol."""
     db = get_db()
 
+    # Main derivatives data — now including liq_long + liq_short
     rows = await db.execute_fetchall(
         """SELECT date, close_price, open_interest_usd, funding_rate,
-                  liquidations_delta, volume_usd
+                  liquidations_long, liquidations_short, liquidations_delta, volume_usd
            FROM daily_derivatives
            WHERE symbol = ?
            ORDER BY date ASC""",
@@ -112,7 +176,26 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
     ois = [r["open_interest_usd"] or 0 for r in rows]
     fundings = [r["funding_rate"] or 0 for r in rows]
     liq_deltas = [r["liquidations_delta"] or 0 for r in rows]
+    liq_longs = [r["liquidations_long"] or 0 for r in rows]
+    liq_shorts = [r["liquidations_short"] or 0 for r in rows]
     volumes = [r["volume_usd"] or 0 for r in rows]
+
+    # Preload RV data (daily_rv) into dict by date
+    rv_rows = await db.execute_fetchall(
+        "SELECT date, rv_30d FROM daily_rv WHERE symbol = ? ORDER BY date ASC",
+        (symbol,),
+    )
+    rv_by_date: dict[str, float] = {r["date"]: r["rv_30d"] for r in rv_rows if r["rv_30d"]}
+    rv_all_values = [v for v in rv_by_date.values() if v > 0]
+    rv_median_val = _median(rv_all_values) if rv_all_values else 0.0
+
+    # Preload 4h candles for MFE computation
+    ohlcv_rows = await db.execute_fetchall(
+        "SELECT ts, high, low FROM ohlcv_4h WHERE symbol = ? ORDER BY ts ASC",
+        (symbol,),
+    )
+    # Convert to list of (timestamp_sec, high, low)
+    candle_data = [(r["ts"] // 1000, r["high"], r["low"]) for r in ohlcv_rows]
 
     total = len(dates)
     warmup_end = max(MIN_POINTS, total - days)
@@ -138,6 +221,8 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
         fund_z = _zscore(fundings[start:i + 1])
         liq_z = _zscore(liq_deltas[start:i + 1])
         vol_z = _zscore(volumes[start:i + 1])
+        liq_long_z = _zscore(liq_longs[start:i + 1])
+        liq_short_z = _zscore(liq_shorts[start:i + 1])
 
         # 1d changes
         prev_price = prices[i - 1]
@@ -154,9 +239,16 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
         if i >= 3:
             z_accel = oi_z - oi_zscores[i - 3]
 
-        confluence, factors = _compute_confluence(
-            oi_z, fund_z, liq_z, vol_z, price_momentum, z_accel,
-        )
+        # RV regime
+        rv_today = rv_by_date.get(date)
+        rv_prev_date = dates[i - 1] if i >= 1 else None
+        rv_prev = rv_by_date.get(rv_prev_date) if rv_prev_date else None
+        rv_regime: str | None = None
+        if rv_today and rv_median_val > 0:
+            if rv_today < rv_median_val * 0.6:
+                rv_regime = "low"
+            elif rv_today > rv_median_val * 1.5:
+                rv_regime = "high"
 
         # Multi-day changes (3d, 5d) for broader divergence detection
         price_3d_ago = prices[i - 3] if i >= 3 else prices[0]
@@ -213,7 +305,44 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
             direction = "long" if price_chg < 0 else "short"  # contrarian after flush
             triggered.append(("vol_divergence", direction))
 
+        # --- NEW SIGNALS ---
+
+        # 11. LIQ LONG FLUSH — longs liquidated massively → contrarian long
+        if liq_long_z > 2.0 and price_chg < -2:
+            triggered.append(("liq_long_flush", "long"))
+
+        # 12. LIQ SHORT SQUEEZE — shorts liquidated massively → momentum long
+        if liq_short_z > 2.0 and price_chg > 2:
+            triggered.append(("liq_short_squeeze", "long"))
+
+        # 13. FUNDING REVERSAL — funding reverses from extreme
+        if i >= 3:
+            fund_3d_ago = fundings[i - 3]
+            fund_delta = fundings[i] - fund_3d_ago
+            if fund_z > 1.5 and fund_delta < -0.0005:
+                triggered.append(("fund_reversal", "short"))
+            if fund_z < -1.5 and fund_delta > 0.0005:
+                triggered.append(("fund_reversal", "long"))
+
+        # 14. VOL COMPRESSION → EXPANSION
+        if rv_today and rv_prev and rv_prev > 0:
+            rv_ratio = rv_today / rv_prev
+            if rv_ratio > 1.5 and rv_prev < rv_median_val:
+                direction = "long" if price_chg > 0 else "short"
+                triggered.append(("vol_expansion", direction))
+
+        # 15. OI FLUSH + VOLUME SPIKE (capitulation event)
+        if oi_chg < -5 and vol_z > 1.5 and price_chg < -3:
+            triggered.append(("oi_flush_vol", "long"))
+
         for alert_type, direction in triggered:
+            # Compute confluence with direction-aware bonuses
+            confluence, factors = _compute_confluence(
+                oi_z, fund_z, liq_z, vol_z, price_momentum, z_accel,
+                liq_long_z, liq_short_z, rv_regime,
+                direction=direction, funding_rate=fundings[i],
+            )
+
             tier = _score_to_tier(confluence)
             if not tier:
                 continue
@@ -237,6 +366,11 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
             return_3d = ((price_3d - price) / price * 100) if price_3d else None
             return_7d = ((price_7d - price) / price * 100) if price_7d else None
 
+            # MFE (Max Favorable Excursion) from 4h candles over 7 days
+            mfe_return, mfe_price = _compute_mfe(
+                candle_data, date, direction, price,
+            )
+
             dt = datetime.fromisoformat(date)
             ts = int(dt.timestamp())
             snapped = (ts // 14400) * 14400
@@ -255,8 +389,10 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
                 "return_1d": round(return_1d, 2) if return_1d is not None else None,
                 "return_3d": round(return_3d, 2) if return_3d is not None else None,
                 "return_7d": round(return_7d, 2) if return_7d is not None else None,
+                "mfe_return": round(mfe_return, 2) if mfe_return is not None else None,
+                "mfe_price": round(mfe_price, 2) if mfe_price is not None else None,
                 "simulated": True,
-                "factors": factors[:4],
+                "factors": factors[:5],
                 "zscores": {
                     "oi": round(oi_z, 2),
                     "funding": round(fund_z, 2),
@@ -265,4 +401,41 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
                 },
             })
 
+    # Cluster nearby same-direction signals
+    alerts = _cluster_alerts(alerts)
+
     return alerts
+
+
+def _compute_mfe(
+    candle_data: list[tuple[int, float, float]],
+    date: str, direction: str, entry_price: float,
+    days: int = 7,
+) -> tuple[float | None, float | None]:
+    """Compute MFE (Max Favorable Excursion) from 4h candles."""
+    if not candle_data:
+        return None, None
+
+    dt = datetime.fromisoformat(date)
+    start_ts = int(dt.timestamp())
+    end_ts = start_ts + days * 86400
+
+    # Collect highs/lows in the 7-day window
+    highs: list[float] = []
+    lows: list[float] = []
+    for ts, high, low in candle_data:
+        if start_ts <= ts <= end_ts:
+            highs.append(high)
+            lows.append(low)
+
+    if not highs:
+        return None, None
+
+    if direction == "long":
+        best = max(highs)
+        mfe_ret = (best - entry_price) / entry_price * 100
+        return mfe_ret, best
+    else:
+        best = min(lows)
+        mfe_ret = (entry_price - best) / entry_price * 100
+        return mfe_ret, best

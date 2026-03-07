@@ -16,6 +16,18 @@ const TYPE_SHORT: Record<string, string> = {
   divergence_squeeze: 'DIV\u2193',
   divergence_top: 'DIV\u2191',
   liq_flush: 'FLUSH',
+  div_squeeze_1d: 'DS1',
+  div_squeeze_3d: 'DS3',
+  div_squeeze_5d: 'DS5',
+  div_top_1d: 'DT1',
+  div_top_3d: 'DT3',
+  liq_flush_3d: 'FL3',
+  vol_divergence: 'VD',
+  liq_long_flush: 'L\u2193FL',
+  liq_short_squeeze: 'S\u2191SQ',
+  fund_reversal: 'F\u21BB',
+  vol_expansion: 'V\u2197',
+  oi_flush_vol: 'OI\u2193V',
 }
 
 function computeEma(closes: number[], period: number): (number | null)[] {
@@ -262,6 +274,25 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
         )}
       </div>
 
+      {/* Per-type stats */}
+      {stats?.by_type && Object.keys(stats.by_type).length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-3 py-1 bg-[#0a0a0a] border-b border-[#1a1a1a] flex-shrink-0">
+          {Object.entries(stats.by_type).sort((a, b) => b[1].count - a[1].count).map(([type, ts]) => (
+            <span key={type} className="text-[9px] font-mono text-[#555]">
+              <span className="text-text-secondary">{TYPE_SHORT[type] || type}</span>
+              {' '}{ts.count}x{' '}
+              <span className={ts.win_rate >= 50 ? 'text-green' : 'text-red'}>{ts.win_rate}%</span>
+              {' '}
+              <span className={ts.avg_return >= 0 ? 'text-green' : 'text-red'}>
+                {ts.avg_return > 0 ? '+' : ''}{ts.avg_return}%
+              </span>
+              {' PF:'}
+              <span className={ts.pf >= 1 ? 'text-green' : 'text-red'}>{ts.pf}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Chart */}
       <div ref={containerRef} className="flex-1 min-h-0">
         {isLoading && (
@@ -284,6 +315,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                 <th className="text-right px-2 py-1">1D</th>
                 <th className="text-right px-2 py-1">3D</th>
                 <th className="text-right px-2 py-1">7D</th>
+                <th className="text-right px-2 py-1">MFE</th>
                 <th className="text-center px-2 py-1">Result</th>
                 <th className="text-center px-2 py-1">Src</th>
               </tr>
@@ -317,6 +349,9 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                     </td>
                     <td className={`px-2 py-1 text-right ${(a.return_7d ?? 0) >= 0 ? 'text-green' : 'text-red'}`}>
                       {fmtReturn(a.return_7d)}
+                    </td>
+                    <td className={`px-2 py-1 text-right ${(a.mfe_return ?? 0) >= 0 ? 'text-green' : 'text-[#555]'}`}>
+                      {a.mfe_return != null ? `+${a.mfe_return.toFixed(1)}%` : '-'}
                     </td>
                     <td className="px-2 py-1 text-center">{hasReturn ? (won ? '\u2705' : '\u274C') : '-'}</td>
                     <td className="px-2 py-1 text-center">
