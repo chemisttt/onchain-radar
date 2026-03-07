@@ -200,32 +200,40 @@ async def compute_liq_clusters(symbol: str) -> dict:
 
     db = get_db()
 
-    # 1. Get 4h OI snapshots (ordered by time)
+    # 1. Get 4h OI snapshots (ordered by time) — use Binance-only OI to avoid
+    #    aggregate spikes when exchanges connect/disconnect
     oi_rows = await db.execute_fetchall(
-        """SELECT ts, close_price, open_interest_usd, funding_rate
+        """SELECT ts, close_price, open_interest_usd, oi_binance_usd, funding_rate
            FROM derivatives_4h
            WHERE symbol = ? AND open_interest_usd > 0
            ORDER BY ts""",
         (sym,),
     )
+    # Use Binance-only OI with fallback to aggregate for old data
+    oi_rows = [{
+        "ts": r["ts"],
+        "close_price": r["close_price"],
+        "open_interest_usd": (r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0),
+        "funding_rate": r["funding_rate"],
+    } for r in oi_rows]
 
     # Fallback to daily if 4h data is sparse
     if len(oi_rows) < 10:
         daily = await db.execute_fetchall(
-            """SELECT date, close_price, open_interest_usd, funding_rate
+            """SELECT date, close_price, open_interest_usd, oi_binance_usd, funding_rate
                FROM daily_derivatives
                WHERE symbol = ? AND open_interest_usd > 0
                ORDER BY date""",
             (sym,),
         )
-        # Convert date → fake ts for uniform processing
+        # Convert date → fake ts for uniform processing, use Binance-only OI
         oi_rows = []
         for r in daily:
             dt = datetime.strptime(r["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
             oi_rows.append({
                 "ts": int(dt.timestamp() * 1000),
                 "close_price": r["close_price"],
-                "open_interest_usd": r["open_interest_usd"],
+                "open_interest_usd": (r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0),
                 "funding_rate": r["funding_rate"],
             })
 

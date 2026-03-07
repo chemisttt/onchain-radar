@@ -1059,12 +1059,13 @@ async def get_global_data(days: int = 365) -> dict:
     cutoff = f"-{days}"
 
     # 1. Per-date aggregates: global OI (split BTC/ETH/Others), global liq delta
+    #    Use Binance-only OI for charts to avoid aggregate spikes when exchanges connect
     rows = await db.execute_fetchall(
         """SELECT d.date,
-                  SUM(CASE WHEN d.symbol='BTCUSDT' THEN d.open_interest_usd ELSE 0 END) as btc_oi,
-                  SUM(CASE WHEN d.symbol='ETHUSDT' THEN d.open_interest_usd ELSE 0 END) as eth_oi,
-                  SUM(CASE WHEN d.symbol NOT IN ('BTCUSDT','ETHUSDT') THEN d.open_interest_usd ELSE 0 END) as others_oi,
-                  SUM(d.open_interest_usd) as total_oi,
+                  SUM(CASE WHEN d.symbol='BTCUSDT' THEN COALESCE(NULLIF(d.oi_binance_usd, 0), d.open_interest_usd) ELSE 0 END) as btc_oi,
+                  SUM(CASE WHEN d.symbol='ETHUSDT' THEN COALESCE(NULLIF(d.oi_binance_usd, 0), d.open_interest_usd) ELSE 0 END) as eth_oi,
+                  SUM(CASE WHEN d.symbol NOT IN ('BTCUSDT','ETHUSDT') THEN COALESCE(NULLIF(d.oi_binance_usd, 0), d.open_interest_usd) ELSE 0 END) as others_oi,
+                  SUM(COALESCE(NULLIF(d.oi_binance_usd, 0), d.open_interest_usd)) as total_oi,
                   SUM(d.liquidations_delta) as total_liq_delta
            FROM daily_derivatives d
            WHERE d.date >= date('now', ? || ' days')
@@ -1224,10 +1225,10 @@ async def get_symbol_detail(symbol: str, days: int = 365) -> dict:
             "price_change_24h_pct": r["price_change_24h_pct"] or 0,
         }
 
-    # History
+    # History — use Binance-only OI for chart (avoids aggregate spikes)
     history_rows = await db.execute_fetchall(
-        """SELECT d.date, d.close_price, d.open_interest_usd, d.funding_rate,
-                  d.liquidations_delta, d.volume_usd,
+        """SELECT d.date, d.close_price, d.open_interest_usd, d.oi_binance_usd,
+                  d.funding_rate, d.liquidations_delta, d.volume_usd,
                   z.oi_zscore, z.funding_zscore, z.liq_zscore, z.volume_zscore
            FROM daily_derivatives d
            LEFT JOIN derivatives_zscores z ON d.symbol = z.symbol AND d.date = z.date
@@ -1238,10 +1239,11 @@ async def get_symbol_detail(symbol: str, days: int = 365) -> dict:
 
     history = []
     for r in history_rows:
+        oi = (r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0)
         history.append({
             "date": r["date"],
             "price": r["close_price"] or 0,
-            "oi": r["open_interest_usd"] or 0,
+            "oi": oi,
             "funding": r["funding_rate"] or 0,
             "liq_delta": r["liquidations_delta"] or 0,
             "volume": r["volume_usd"] or 0,
