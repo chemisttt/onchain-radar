@@ -44,7 +44,7 @@ VELOCITY_LOOKBACK = 48  # 48 * 5min = 4h
 
 VELOCITY_SIGNIFICANT = 0.5  # per hour
 
-LIQ_PROXIMITY_PCT = 3.0
+LIQ_PROXIMITY_PCT = 5.0
 LIQ_MIN_WEIGHT = 0.20
 
 OB_PRICE_DIVERGENCE_PCT = 2.0
@@ -209,7 +209,11 @@ def _is_ob_divergence(price_chg: float, ob_skew: float, ob_skew_z: float) -> boo
 # ── Liq cluster proximity ───────────────────────────────────────────
 
 async def _check_liq_proximity(sym: str, current_price: float) -> dict | None:
-    """Check if price is near a high-weight liquidation cluster."""
+    """Check if price is near a high-volume liquidation cluster.
+
+    Ranks by estimated USD volume (not distance) — larger clusters matter more.
+    Skips 50x/100x noise; focuses on 5x-25x where real size sits.
+    """
     from services.liquidation_service import (
         LEVERAGE_TIERS, LEVERAGE_WEIGHTS, _compute_theoretical_levels,
     )
@@ -217,34 +221,40 @@ async def _check_liq_proximity(sym: str, current_price: float) -> dict | None:
     if not levels or current_price <= 0:
         return None
 
-    closest = None
-    closest_distance = float("inf")
+    best = None
+    best_volume = 0
 
     for level in levels:
         lev_price = level["price"]
         leverage = level["leverage"]
+
+        # Skip high-leverage noise (50x, 100x) — too close, too small
+        if leverage > 25:
+            continue
+
         tier_idx = LEVERAGE_TIERS.index(leverage) if leverage in LEVERAGE_TIERS else -1
         if tier_idx < 0:
             continue
-        weight = LEVERAGE_WEIGHTS[tier_idx]
-        if weight < LIQ_MIN_WEIGHT:
-            continue
 
         distance_pct = abs(current_price - lev_price) / current_price * 100
-        if distance_pct < closest_distance:
-            closest_distance = distance_pct
-            is_long_liq = level["long_vol"] > 0
-            closest = {
+        if distance_pct > LIQ_PROXIMITY_PCT:
+            continue
+
+        is_long_liq = level["long_vol"] > 0
+        volume = level["long_vol"] if is_long_liq else level["short_vol"]
+
+        # Rank by volume — largest cluster wins
+        if volume > best_volume:
+            best_volume = volume
+            best = {
                 "level_price": lev_price,
                 "distance_pct": round(distance_pct, 2),
                 "direction": "long" if is_long_liq else "short",
                 "leverage": leverage,
-                "volume_usd": level["long_vol"] if is_long_liq else level["short_vol"],
+                "volume_usd": volume,
             }
 
-    if closest and closest["distance_pct"] < LIQ_PROXIMITY_PCT:
-        return closest
-    return None
+    return best
 
 
 # ── Confluence scoring ───────────────────────────────────────────────
@@ -574,7 +584,7 @@ async def check_alerts() -> list[dict]:
                     "key": f"liq_proximity:{sym}:{direction}",
                     "tier": tier,
                     "confluence": prox_confluence,
-                    "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {direction} cluster {_fmt_price(lev_price)}",
+                    "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
                     "body": _format_alert_body(
                         what_we_see,
                         indicators=[
