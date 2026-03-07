@@ -7,6 +7,7 @@ import FundingPanel from './components/funding/FundingPanel'
 import FundingArb from './components/funding/FundingArb'
 import AnalyzerPanel from './components/analyzer/AnalyzerPanel'
 import DerivativesPanel from './components/derivatives/DerivativesPanel'
+import DocsPanel from './components/docs/DocsPanel'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -23,6 +24,7 @@ export default function App() {
         fundingArb={<FundingArb />}
         analyzer={<AnalyzerPanel />}
         derivatives={<DerivativesPanel />}
+        docs={<DocsPanel />}
       />
     </QueryClientProvider>
   )

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type ActiveTab = 'feed' | 'funding' | 'analyzer' | 'derivatives'
+export type ActiveTab = 'feed' | 'funding' | 'analyzer' | 'derivatives' | 'docs'
 
 interface AppStore {
   activeTab: ActiveTab
