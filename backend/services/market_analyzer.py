@@ -208,27 +208,26 @@ def _is_ob_divergence(price_chg: float, ob_skew: float, ob_skew_z: float) -> boo
 
 # ── Liq cluster proximity ───────────────────────────────────────────
 
-async def _check_liq_proximity(sym: str, current_price: float) -> dict | None:
-    """Check if price is near a high-volume liquidation cluster.
+async def _check_liq_proximity(sym: str, current_price: float) -> list[dict]:
+    """Check if price is near liquidation clusters (5x-25x only).
 
-    Ranks by estimated USD volume (not distance) — larger clusters matter more.
-    Skips 50x/100x noise; focuses on 5x-25x where real size sits.
+    Returns ALL clusters within range, sorted by volume desc.
+    Each cluster gets its own alert so cascade liquidations (25x → 10x → 5x)
+    are reported individually without cooldown blocking.
     """
     from services.liquidation_service import (
         LEVERAGE_TIERS, LEVERAGE_WEIGHTS, _compute_theoretical_levels,
     )
     levels = await _compute_theoretical_levels(sym)
     if not levels or current_price <= 0:
-        return None
+        return []
 
-    best = None
-    best_volume = 0
-
+    nearby = []
     for level in levels:
         lev_price = level["price"]
         leverage = level["leverage"]
 
-        # Skip high-leverage noise (50x, 100x) — too close, too small
+        # Skip high-leverage noise (50x, 100x)
         if leverage > 25:
             continue
 
@@ -243,18 +242,17 @@ async def _check_liq_proximity(sym: str, current_price: float) -> dict | None:
         is_long_liq = level["long_vol"] > 0
         volume = level["long_vol"] if is_long_liq else level["short_vol"]
 
-        # Rank by volume — largest cluster wins
-        if volume > best_volume:
-            best_volume = volume
-            best = {
-                "level_price": lev_price,
-                "distance_pct": round(distance_pct, 2),
-                "direction": "long" if is_long_liq else "short",
-                "leverage": leverage,
-                "volume_usd": volume,
-            }
+        nearby.append({
+            "level_price": lev_price,
+            "distance_pct": round(distance_pct, 2),
+            "direction": "long" if is_long_liq else "short",
+            "leverage": leverage,
+            "volume_usd": volume,
+        })
 
-    return best
+    # Sort by volume desc — biggest cluster first
+    nearby.sort(key=lambda x: x["volume_usd"], reverse=True)
+    return nearby
 
 
 # ── Confluence scoring ───────────────────────────────────────────────
@@ -457,7 +455,9 @@ async def check_alerts() -> list[dict]:
 
         velocities = _compute_all_velocities(sym, cur)
 
-        liq_prox = await _check_liq_proximity(sym, price)
+        liq_clusters = await _check_liq_proximity(sym, price)
+        # For confluence scoring, use closest cluster (if any)
+        liq_prox = liq_clusters[0] if liq_clusters else None
 
         # Determine directional bias for confluence
         is_bullish = None
@@ -562,45 +562,46 @@ async def check_alerts() -> list[dict]:
 
         # ── STRUCTURAL ALERTS ────────────────────────────────
 
-        # 5. LIQ PROXIMITY — require at least SIGNAL-level confluence
-        if liq_prox:
+        # 5. LIQ PROXIMITY — alert each cluster separately (cascade-friendly)
+        for cluster in liq_clusters:
             prox_confluence = max(confluence, CONFLUENCE_SIGNAL)
             tier = _score_to_tier(prox_confluence)
-            if tier:
-                direction = liq_prox["direction"]
-                dist = liq_prox["distance_pct"]
-                lev_price = liq_prox["level_price"]
-                leverage = liq_prox["leverage"]
-                vol = liq_prox["volume_usd"]
+            if not tier:
+                continue
+            direction = cluster["direction"]
+            dist = cluster["distance_pct"]
+            lev_price = cluster["level_price"]
+            leverage = cluster["leverage"]
+            vol = cluster["volume_usd"]
 
-                what_we_see = [
-                    f"Nearest liq: {_fmt_price(lev_price)} ({leverage}x {direction}s, -{dist:.1f}%)",
-                    f"Estimated volume at level: {_fmt_usd(vol)}",
-                    f"Price: {_fmt_price(price)} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
-                ]
-                what_we_see.extend(_velocity_context_lines(velocities))
+            what_we_see = [
+                f"Liq cluster: {_fmt_price(lev_price)} ({leverage}x {direction}s, -{dist:.1f}%)",
+                f"Estimated volume at level: {_fmt_usd(vol)}",
+                f"Price: {_fmt_price(price)} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
+            ]
+            what_we_see.extend(_velocity_context_lines(velocities))
 
-                alerts.append({
-                    "key": f"liq_proximity:{sym}:{direction}",
-                    "tier": tier,
-                    "confluence": prox_confluence,
-                    "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
-                    "body": _format_alert_body(
-                        what_we_see,
-                        indicators=[
-                            "Цена тяготеет к ликвидационным кластерам (magnetic effect)",
-                            f"{'Каскадные ликвидации лонгов ниже этого уровня' if direction == 'long' else 'Short squeeze выше этого уровня'}",
-                            f"Confluence: {prox_confluence} ({', '.join(factors[:3])})",
-                        ],
-                        action=[
-                            f"{'Ждать bounce у/рядом ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ' + _fmt_price(lev_price)}",
-                            f"{'Ставить биды чуть ниже liq level' if direction == 'long' else 'Тайтить стопы выше liq level'}",
-                            "Мониторить real-time liqs для подтверждения каскада",
-                        ],
-                        tier=tier,
-                        confluence=prox_confluence,
-                    ),
-                })
+            alerts.append({
+                "key": f"liq_proximity:{sym}:{direction}:{leverage}x",
+                "tier": tier,
+                "confluence": prox_confluence,
+                "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
+                "body": _format_alert_body(
+                    what_we_see,
+                    indicators=[
+                        f"{'Каскадные ликвидации лонгов ниже ' + _fmt_price(lev_price) if direction == 'long' else 'Short squeeze выше ' + _fmt_price(lev_price)}",
+                        f"Leverage {leverage}x → ликвидация при движении {100/leverage:.0f}% от входа",
+                        f"Confluence: {prox_confluence} ({', '.join(factors[:3])})",
+                    ],
+                    action=[
+                        f"{'Ждать bounce у/рядом ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ' + _fmt_price(lev_price)}",
+                        f"{'Ставить биды чуть ниже liq level' if direction == 'long' else 'Тайтить стопы выше liq level'}",
+                        "Мониторить real-time liqs для подтверждения каскада",
+                    ],
+                    tier=tier,
+                    confluence=prox_confluence,
+                ),
+            })
 
         # 6. OB DIVERGENCE
         if _is_ob_divergence(price_chg, ob_skew, ob_skew_z):
@@ -1117,18 +1118,18 @@ async def _build_liq_proximity_section(screener: list[dict]) -> str:
         price = s.get("price", 0)
         if price <= 0:
             continue
-        prox = await _check_liq_proximity(sym, price)
-        if prox:
+        clusters = await _check_liq_proximity(sym, price)
+        for prox in clusters:
             short_sym = sym.replace("USDT", "")
             close_symbols.append((
                 prox["distance_pct"],
-                f"<b>{short_sym}</b>: {_fmt_price(prox['level_price'])} ({prox['leverage']}x {prox['direction']}s, -{prox['distance_pct']:.1f}%)"
+                f"<b>{short_sym}</b>: {_fmt_price(prox['level_price'])} ({prox['leverage']}x {prox['direction']}s, -{prox['distance_pct']:.1f}%, {_fmt_usd(prox['volume_usd'])})"
             ))
     if not close_symbols:
         return ""
     close_symbols.sort(key=lambda x: x[0])
-    lines = ["💥 <b>LIQ PROXIMITY (< 3% от кластера):</b>"]
-    for _, text in close_symbols[:5]:
+    lines = [f"💥 <b>LIQ PROXIMITY (< {LIQ_PROXIMITY_PCT:.0f}% от кластера, ≤25x):</b>"]
+    for _, text in close_symbols[:8]:
         lines.append(f"• {text}")
     lines.append("")
     return "\n".join(lines)
