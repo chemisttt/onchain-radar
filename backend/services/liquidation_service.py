@@ -278,7 +278,10 @@ async def compute_liq_clusters(symbol: str) -> dict:
         oi = row["open_interest_usd"] or 0
         price = row["close_price"] or 0
         ts = row["ts"]
-        funding = row.get("funding_rate") or 0
+        try:
+            funding = row["funding_rate"] or 0
+        except (KeyError, IndexError):
+            funding = 0
 
         delta = oi - prev_oi
         prev_oi = oi
