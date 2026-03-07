@@ -82,6 +82,17 @@ def _fmt_usd(val: float) -> str:
     return f"${val:.0f}"
 
 
+def _fmt_price(val: float) -> str:
+    """Format price with appropriate decimal places: $92,150 / $0.2634 / $1.42"""
+    if val >= 1000:
+        return f"${val:,.0f}"
+    if val >= 1:
+        return f"${val:,.2f}"
+    if val >= 0.01:
+        return f"${val:.4f}"
+    return f"${val:.6f}"
+
+
 def _fmt_pct(val: float) -> str:
     sign = "+" if val >= 0 else ""
     return f"{sign}{val:.1f}%"
@@ -553,9 +564,9 @@ async def check_alerts() -> list[dict]:
                 vol = liq_prox["volume_usd"]
 
                 what_we_see = [
-                    f"Nearest liq: ${lev_price:,.0f} ({leverage}x {direction}s, -{dist:.1f}%)",
+                    f"Nearest liq: {_fmt_price(lev_price)} ({leverage}x {direction}s, -{dist:.1f}%)",
                     f"Estimated volume at level: {_fmt_usd(vol)}",
-                    f"Price: ${price:,.2f} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
+                    f"Price: {_fmt_price(price)} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
                 ]
                 what_we_see.extend(_velocity_context_lines(velocities))
 
@@ -563,7 +574,7 @@ async def check_alerts() -> list[dict]:
                     "key": f"liq_proximity:{sym}:{direction}",
                     "tier": tier,
                     "confluence": prox_confluence,
-                    "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {direction} cluster ${lev_price:,.0f}",
+                    "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {direction} cluster {_fmt_price(lev_price)}",
                     "body": _format_alert_body(
                         what_we_see,
                         indicators=[
@@ -572,7 +583,7 @@ async def check_alerts() -> list[dict]:
                             f"Confluence: {prox_confluence} ({', '.join(factors[:3])})",
                         ],
                         action=[
-                            f"{'Ждать bounce у/рядом ${:,.0f}'.format(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ${:,.0f}'.format(lev_price)}",
+                            f"{'Ждать bounce у/рядом ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ' + _fmt_price(lev_price)}",
                             f"{'Ставить биды чуть ниже liq level' if direction == 'long' else 'Тайтить стопы выше liq level'}",
                             "Мониторить real-time liqs для подтверждения каскада",
                         ],
@@ -1101,7 +1112,7 @@ async def _build_liq_proximity_section(screener: list[dict]) -> str:
             short_sym = sym.replace("USDT", "")
             close_symbols.append((
                 prox["distance_pct"],
-                f"<b>{short_sym}</b>: ${prox['level_price']:,.0f} ({prox['leverage']}x {prox['direction']}s, -{prox['distance_pct']:.1f}%)"
+                f"<b>{short_sym}</b>: {_fmt_price(prox['level_price'])} ({prox['leverage']}x {prox['direction']}s, -{prox['distance_pct']:.1f}%)"
             ))
     if not close_symbols:
         return ""
