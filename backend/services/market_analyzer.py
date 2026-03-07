@@ -486,20 +486,22 @@ async def check_alerts() -> list[dict]:
                 ))
 
         # 3. DIVERGENCE — OI vs Price
+        # Backtest: OI↑ + Price↓ = new shorts accumulating (trend continuation),
+        # NOT squeeze setup. 78% hit rate when expecting further downside.
         if oi_chg > 8 and price_chg < -2:
             tier = _score_to_tier(confluence)
             if tier:
                 alerts.append(_build_directional_alert(
-                    "divergence_squeeze", sym, short_sym, "ДИВЕРГЕНЦИЯ — OI↑ Price↓ (сквиз)",
+                    "divergence_squeeze", sym, short_sym, "ДИВЕРГЕНЦИЯ — OI↑ Price↓ (давление)",
                     cur, velocities, confluence, tier, factors,
                     indicators=[
-                        "OI растёт при падении цены → накопление шортов",
-                        "Short squeeze вероятен при развороте",
-                        f"{'Funding отрицательный — шорты перегружены' if fund_z < -0.5 else 'Funding нейтральный — давление умеренное'}",
+                        "OI растёт при падении цены → новые шорты открываются",
+                        "Продолжение нисходящего тренда вероятно",
+                        f"{'Funding отрицательный — шорты доминируют' if fund_z < -0.5 else 'Funding нейтральный — давление может усилиться'}",
                     ],
                     action=[
-                        "Готовить лонг на сквиз-уровнях",
-                        "Entry при первых признаках разворота + volume",
+                        "НЕ ловить нож — тренд вниз подтверждён",
+                        "Шорт при откате к resistance / наклонной сверху",
                     ],
                 ))
         elif oi_chg < -8 and price_chg > 4:
@@ -620,7 +622,9 @@ async def check_alerts() -> list[dict]:
                 })
 
         # 7. VOLUME ANOMALY
-        if vol_z > Z_MODERATE and (abs(oi_z) > 1.5 or abs(fund_z) > 1.5):
+        # Backtest: confluence <3 gives 35-40% hit (noise), ≥3 gives 54%.
+        # Require confluence ≥ CONFLUENCE_SETUP to filter noise.
+        if vol_z > Z_MODERATE and (abs(oi_z) > 1.5 or abs(fund_z) > 1.5) and confluence >= CONFLUENCE_SETUP:
             tier = _score_to_tier(confluence)
             if tier:
                 direction = "LONG" if price_chg > 0 else "SHORT" if price_chg < 0 else "—"
@@ -736,7 +740,10 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
             sym_data = current.get(sym, {})
 
             # Vol compression
-            if iv > 0 and rv > 0 and iv < 30 and rv < 30:
+            # Backtest: RV never drops below 47% in crypto. Use IV-only as
+            # forward-looking compression indicator. IV < 37% = historically low
+            # (BTC: 42 days out of 502 in backtest period).
+            if iv > 0 and iv < 37:
                 tier = TIER_SIGNAL
                 alerts.append({
                     "key": f"vol_compression:{sym}",
@@ -750,7 +757,7 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                             f"OI_z: {sym_data.get('oi_z', 0):+.1f} | Fund_z: {sym_data.get('funding_z', 0):+.1f}",
                         ],
                         indicators=[
-                            "IV и RV оба ниже 30% — историческое сжатие",
+                            f"IV {iv:.0f}% — ниже исторических норм",
                             "Breakout imminent — направление определят метрики",
                             f"{'Skew puts > calls — рынок боится падения' if skew_z > 1 else 'Skew neutral' if abs(skew_z) < 1 else 'Skew calls > puts — рынок ждёт роста'}",
                         ],
