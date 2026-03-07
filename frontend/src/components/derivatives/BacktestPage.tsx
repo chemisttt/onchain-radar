@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { createChart, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type SeriesMarker, type CandlestickData, type Time } from 'lightweight-charts'
+import { createChart, createSeriesMarkers, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type Time, type UTCTimestamp, type SeriesMarker } from 'lightweight-charts'
 import { useBacktest, type BacktestAlert } from '../../hooks/useBacktest'
 
 type Range = '1W' | '1M' | '3M'
@@ -63,16 +63,10 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
     })
 
     // Scroll to alert time
-    chart.timeScale().scrollToPosition(-5, false)
-    const timeRange = chart.timeScale().getVisibleRange()
-    if (timeRange) {
-      const alertTime = alert.time as Time
-      chart.timeScale().setVisibleRange({
-        from: (alert.time - 86400 * 3) as Time,
-        to: (alert.time + 86400 * 5) as Time,
-      })
-      void alertTime // suppress unused
-    }
+    chart.timeScale().setVisibleRange({
+      from: ((alert.time - 86400 * 3) as UTCTimestamp) as Time,
+      to: ((alert.time + 86400 * 5) as UTCTimestamp) as Time,
+    })
   }, [])
 
   // Chart setup
@@ -117,7 +111,13 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
       wickUpColor: '#22c55e',
       wickDownColor: '#ef4444',
     })
-    candleSeries.setData(data.candles as CandlestickData<Time>[])
+    candleSeries.setData(data.candles.map((c) => ({
+      time: c.time as UTCTimestamp,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    })))
     candleSeriesRef.current = candleSeries
 
     // EMA lines
@@ -133,7 +133,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
     for (const { period, color } of emaConfigs) {
       const emaValues = computeEma(closes, period)
       const emaData = times
-        .map((t, i) => (emaValues[i] != null ? { time: t as Time, value: emaValues[i]! } : null))
+        .map((t, i) => (emaValues[i] != null ? { time: (t as UTCTimestamp) as Time, value: emaValues[i]! } : null))
         .filter(Boolean) as { time: Time; value: number }[]
 
       if (emaData.length > 0) {
@@ -168,13 +168,13 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
     // Alert markers
     if (data.alerts.length > 0) {
       const markers: SeriesMarker<Time>[] = data.alerts.map((a) => ({
-        time: a.time as Time,
+        time: (a.time as UTCTimestamp) as Time,
         position: a.direction === 'long' ? 'belowBar' as const : 'aboveBar' as const,
         color: TIER_COLORS[a.tier] || '#888',
         shape: a.direction === 'long' ? 'arrowUp' as const : 'arrowDown' as const,
         text: `${a.tier} ${a.type}`,
       }))
-      candleSeries.setMarkers(markers)
+      createSeriesMarkers(candleSeries, markers)
     }
 
     chart.timeScale().fitContent()
