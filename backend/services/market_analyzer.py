@@ -329,15 +329,17 @@ def _build_watchlist(screener: list[dict]) -> list[str]:
     return items
 
 
-# ── Real-time Alerts ─────────────────────────────────────────────────
+# ── Real-time Composite Alerts ────────────────────────────────────────
+# Only fire when MULTIPLE metrics align — no single-metric noise.
+# Based on strategies from docs/metrics-guide.md
 
 _prev_snapshot: dict[str, dict] = {}
 _initialized = False
 
 
 async def check_alerts() -> list[dict]:
-    """Check alert conditions. Returns list of triggered alert dicts.
-    Each dict: {key, title, body} where body is HTML-formatted.
+    """Check composite alert conditions. Returns list of triggered alert dicts.
+    Each alert requires 2+ metrics confirming the same thesis.
     """
     global _prev_snapshot, _initialized
 
@@ -358,6 +360,7 @@ async def check_alerts() -> list[dict]:
             "oi_change_24h_pct": s.get("oi_change_24h_pct", 0),
             "funding_rate": s.get("funding_rate", 0),
             "open_interest_usd": s.get("open_interest_usd", 0),
+            "percentile_avg": s.get("percentile_avg", 50),
         }
 
     # First run — populate without alerting
@@ -372,181 +375,306 @@ async def check_alerts() -> list[dict]:
     for sym, cur in current.items():
         prev = _prev_snapshot.get(sym, {})
         short_sym = sym.replace("USDT", "")
+        oi_z = cur["oi_z"]
+        fund_z = cur["funding_z"]
+        liq_z = cur["liq_z"]
+        vol_z = cur["volume_z"]
+        price_chg = cur["price_change_24h_pct"]
+        oi_chg = cur["oi_change_24h_pct"]
+        composite = (oi_z + fund_z + liq_z) / 3
 
-        # 1. Z-score NEW crossing |z| > 2 (was <= 2)
-        for metric, label in [
-            ("oi_z", "OI"), ("funding_z", "Funding"), ("liq_z", "Liq"), ("volume_z", "Volume")
-        ]:
-            cur_z = cur.get(metric, 0)
-            prev_z = prev.get(metric, 0)
-            if abs(cur_z) > 2 and abs(prev_z) <= 2:
-                direction = "🔴" if cur_z > 0 else "🟢"
-                alerts.append(_build_zscore_alert(
-                    key=f"{metric}:{sym}",
-                    sym=short_sym,
-                    metric_label=label,
-                    z=cur_z,
-                    direction=direction,
-                    data=cur,
-                ))
-
-        # 2. Price move > 10%
-        price_chg = cur.get("price_change_24h_pct", 0)
-        if abs(price_chg) > 10:
-            emoji = "🚀" if price_chg > 0 else "💥"
+        # ── 1. OVERHEAT: OI extreme + funding extreme same direction
+        # metrics-guide §3 scenario 4 + §4: OI_z > +2 + Fund_z > +1.5 → cascade risk
+        if oi_z > 2 and fund_z > 1.5:
             alerts.append({
-                "key": f"price_move:{sym}",
-                "title": f"{emoji} {short_sym} Price {_fmt_pct(price_chg)} (24h)",
+                "key": f"overheat:{sym}",
+                "title": f"🔴 {short_sym} ПЕРЕГРЕВ — OI + Funding extreme",
                 "body": _format_alert_body(
                     what_we_see=[
-                        f"Price {_fmt_pct(price_chg)} за 24ч",
-                        f"OI change: {_fmt_pct(cur.get('oi_change_24h_pct', 0))}",
-                        f"OI_z: {cur.get('oi_z', 0):+.1f}, Fund_z: {cur.get('funding_z', 0):+.1f}",
+                        f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f} | Liq_z: {liq_z:+.1f}",
+                        f"OI: {_fmt_usd(cur['open_interest_usd'])} ({_fmt_pct(oi_chg)} 24h)",
+                        f"Price: {_fmt_pct(price_chg)} 24h | Composite: {composite:+.1f}",
                     ],
                     indicators=[
-                        f"Движение {'> +10%' if price_chg > 0 else '< -10%'} — экстремальное",
-                        f"Проверить дивергенции OI/Price",
+                        "OI на экстремуме + лонги платят экстремальный фандинг",
+                        "Каскадные ликвидации лонгов вероятны",
+                        "Волна 5 по OI — дивергенция с ценой возможна",
                     ],
                     action=[
-                        f"{'Не FOMO лонг — ждать откат к зоне' if price_chg > 0 else 'Не панически шортить — ждать подтверждение'}",
-                        "Проверить ликвидационную карту для уровней",
+                        "НЕ открывать новые лонги",
+                        "Готовить шорт на наклонной сверху",
+                        "Ждать разгрузку OI (drop > 5%) для re-entry long",
                     ],
                 ),
             })
 
-    # 3. Composite regime transition (extreme only)
-    top10_current = sorted(
-        [(s, current.get(s, {})) for s in current],
-        key=lambda x: x[1].get("open_interest_usd", 0) if isinstance(x[1], dict) else 0,
+        # ── 2. CAPITULATION: OI washed + funding negative + liq cascade
+        # metrics-guide §3 scenario 1+3, §5: post-flush entry
+        if oi_z < -1.5 and fund_z < -1.5:
+            alerts.append({
+                "key": f"capitulation:{sym}",
+                "title": f"🟢 {short_sym} КАПИТУЛЯЦИЯ — вымытость + шорты платят",
+                "body": _format_alert_body(
+                    what_we_see=[
+                        f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f} | Liq_z: {liq_z:+.1f}",
+                        f"OI: {_fmt_usd(cur['open_interest_usd'])} ({_fmt_pct(oi_chg)} 24h)",
+                        f"Price: {_fmt_pct(price_chg)} 24h",
+                    ],
+                    indicators=[
+                        "OI вымыт + шорты платят фандинг = слабые руки вышли",
+                        "Зона накопления — исторически high-probability long",
+                        "Волна A/B завершается, ожидать reversal",
+                    ],
+                    action=[
+                        "Искать лонг на зонах интереса / наклонных снизу",
+                        "Подтверждение: OI начинает расти с текущих уровней",
+                        "Stop под ближайший liq cluster",
+                    ],
+                ),
+            })
+
+        # ── 3. LIQUIDATION CASCADE + FLUSH
+        # metrics-guide §5: liq_z > 2 + price drop + OI dropping = flush event
+        if liq_z > 2 and price_chg < -3 and oi_chg < -2:
+            alerts.append({
+                "key": f"liq_flush:{sym}",
+                "title": f"💥 {short_sym} LIQ FLUSH — каскад + OI сброс",
+                "body": _format_alert_body(
+                    what_we_see=[
+                        f"Liq_z: {liq_z:+.1f} | Price: {_fmt_pct(price_chg)} | OI: {_fmt_pct(oi_chg)}",
+                        f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
+                        f"OI: {_fmt_usd(cur['open_interest_usd'])}",
+                    ],
+                    indicators=[
+                        "Каскадные ликвидации + слив OI = flush event",
+                        "Слабые лонги ликвидированы, рынок очищается",
+                        "После flush — bounce вероятен (mean reversion)",
+                    ],
+                    action=[
+                        "НЕ шортить на лоях — flush уже произошёл",
+                        "Ждать стабилизацию (1-2 свечи), затем лонг на зоне",
+                        f"{'Funding уже отрицательный — подтверждает flush' if fund_z < 0 else 'Funding ещё положительный — flush может продолжиться'}",
+                    ],
+                ),
+            })
+
+        # ── 4. OI/PRICE DIVERGENCE (strong)
+        # metrics-guide §3 scenario 2+3: significant OI vs price mismatch
+        if oi_chg > 7 and price_chg < -2:
+            # OI growing + price falling → short squeeze building
+            alerts.append({
+                "key": f"divergence_squeeze:{sym}",
+                "title": f"⚡ {short_sym} ДИВЕРГЕНЦИЯ — OI↑ Price↓ (сквиз)",
+                "body": _format_alert_body(
+                    what_we_see=[
+                        f"OI: {_fmt_pct(oi_chg)} 24h | Price: {_fmt_pct(price_chg)} 24h",
+                        f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f} | Liq_z: {liq_z:+.1f}",
+                    ],
+                    indicators=[
+                        "OI растёт при падении цены → агрессивное накопление шортов",
+                        "Short squeeze вероятен при развороте",
+                        f"{'Funding отрицательный — шорты перегружены' if fund_z < -0.5 else 'Funding нейтральный — давление шортов умеренное'}",
+                    ],
+                    action=[
+                        "Готовить лонг на сквиз-уровнях (liq map clusters сверху)",
+                        "Entry при первых признаках разворота + volume confirmation",
+                    ],
+                ),
+            })
+        elif oi_chg < -7 and price_chg > 3:
+            # OI falling + price rising → short covering rally, top close
+            alerts.append({
+                "key": f"divergence_top:{sym}",
+                "title": f"⚠️ {short_sym} ДИВЕРГЕНЦИЯ — OI↓ Price↑ (топ)",
+                "body": _format_alert_body(
+                    what_we_see=[
+                        f"OI: {_fmt_pct(oi_chg)} 24h | Price: {_fmt_pct(price_chg)} 24h",
+                        f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
+                    ],
+                    indicators=[
+                        "OI падает при росте цены → рост на закрытии шортов",
+                        "Нет новых покупателей — топ близко",
+                        "Волна 5 exhaustion pattern",
+                    ],
+                    action=[
+                        "НЕ добавлять лонги на текущих уровнях",
+                        "Искать шорт при касании наклонной сверху",
+                    ],
+                ),
+            })
+
+        # ── 5. VOLUME BREAKOUT + подтверждение
+        # metrics-guide §6: vol_z > 2 + другой z > 1.5 = настоящий breakout
+        if vol_z > 2 and (abs(oi_z) > 1.5 or abs(fund_z) > 1.5):
+            direction = "LONG" if price_chg > 0 else "SHORT" if price_chg < 0 else "НЕОПР"
+            alerts.append({
+                "key": f"vol_breakout_confirmed:{sym}",
+                "title": f"🔊 {short_sym} VOLUME BREAKOUT — подтверждён метриками",
+                "body": _format_alert_body(
+                    what_we_see=[
+                        f"Vol_z: {vol_z:+.1f} | Price: {_fmt_pct(price_chg)} 24h",
+                        f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
+                    ],
+                    indicators=[
+                        f"Volume extreme + {'OI' if abs(oi_z) > 1.5 else 'Funding'} подтверждает",
+                        f"{'Breakout direction: {}'.format(direction)}",
+                        f"{'Кульминация покупок — осторожно' if price_chg > 5 and fund_z > 1.5 else 'Breakout может продолжиться' if abs(price_chg) > 2 else 'Volume без цены — накопление/распределение'}",
+                    ],
+                    action=[
+                        f"Торговать {'лонг' if price_chg > 0 else 'шорт' if price_chg < 0 else 'по направлению'} при пробое уровня",
+                        "Проверить liq map для TP уровней",
+                    ],
+                ),
+            })
+
+    # ── 6. REGIME TRANSITION (market-wide)
+    # metrics-guide §7: only extreme transitions matter
+    top10 = sorted(
+        current.items(),
+        key=lambda x: x[1].get("open_interest_usd", 0),
         reverse=True,
     )[:10]
     top10_prev = sorted(
-        [(s, _prev_snapshot.get(s, {})) for s in _prev_snapshot],
-        key=lambda x: x[1].get("open_interest_usd", 0) if isinstance(x[1], dict) else 0,
+        _prev_snapshot.items(),
+        key=lambda x: x[1].get("open_interest_usd", 0),
         reverse=True,
     )[:10]
 
     def _avg_composite(items):
-        vals = []
-        for _, d in items:
-            if isinstance(d, dict):
-                vals.append((d.get("oi_z", 0) + d.get("funding_z", 0) + d.get("liq_z", 0)) / 3)
+        vals = [(d.get("oi_z", 0) + d.get("funding_z", 0) + d.get("liq_z", 0)) / 3
+                for _, d in items if isinstance(d, dict)]
         return sum(vals) / len(vals) if vals else 0
 
-    cur_composite = _avg_composite(top10_current)
+    cur_composite = _avg_composite(top10)
     prev_composite = _avg_composite(top10_prev)
     cur_label, _ = _regime_label(cur_composite)
     prev_label, _ = _regime_label(prev_composite)
 
     if cur_label != prev_label:
-        # Only alert on extreme transitions (involving green or red zones)
-        extreme_keywords = ("Deep Oversold", "Extreme", "Oversold", "Overbought")
+        extreme_keywords = ("Deep Oversold", "Extreme")
         if any(kw in cur_label or kw in prev_label for kw in extreme_keywords):
+            # Gather supporting data for the regime alert
+            extreme_syms = []
+            for sym_name, d in top10:
+                c = (d.get("oi_z", 0) + d.get("funding_z", 0) + d.get("liq_z", 0)) / 3
+                if abs(c) > 1.5:
+                    extreme_syms.append(f"{sym_name.replace('USDT', '')} ({c:+.1f})")
+
             alerts.append({
                 "key": "regime_transition",
-                "title": f"🔄 Regime: {prev_label} → {cur_label}",
+                "title": f"🔄 REGIME SHIFT: {prev_label} → {cur_label}",
                 "body": _format_alert_body(
                     what_we_see=[
                         f"Composite Z: {prev_composite:+.2f} → {cur_composite:+.2f}",
-                        f"Переход режима рынка",
+                        f"Extreme symbols: {', '.join(extreme_syms[:5]) or 'none'}",
                     ],
                     indicators=[
-                        f"{'Рынок начинает остывать' if cur_composite < prev_composite else 'Рынок разогревается'}",
+                        f"{'Рынок ПЕРЕГРЕТ — множество метрик в красной зоне' if cur_composite > 1.5 else 'Рынок ВЫМЫТ — множество метрик в зелёной зоне' if cur_composite < -1.5 else 'Переход между зонами'}",
+                        f"{'Risk-off: сокращать экспозицию' if cur_composite > 1.5 else 'Risk-on: наращивать экспозицию' if cur_composite < -1.5 else 'Ждать подтверждения'}",
                     ],
                     action=[
-                        f"{'Искать шорт-сетапы' if cur_composite > 1.5 else 'Искать лонг-сетапы' if cur_composite < -1.5 else 'Наблюдать за развитием'}",
+                        f"{'Не открывать новые лонги, искать шорт-сетапы' if cur_composite > 1.5 else 'Искать лонг-сетапы на зонах интереса' if cur_composite < -1.5 else 'Наблюдать за развитием'}",
+                        "Проверить Global Dashboard для полной картины",
                     ],
                 ),
             })
 
-    # 4. Funding spread alerts — disabled (not actively trading arb)
-    # To re-enable: uncomment and set threshold in check_alerts()
-
-    # 5. Vol breakout (BTC/ETH: |vrp_zscore| > 2)
+    # ── 7. VOL REGIME SHIFT (BTC/ETH) — compression/expansion + VRP
+    # metrics-guide §10-12: vol compression → breakout, VRP extreme + skew
     try:
         db = get_db()
         for sym in ("BTCUSDT", "ETHUSDT"):
             row = await db.execute_fetchall(
-                """SELECT vrp_zscore, iv_30d, rv_30d, vrp
+                """SELECT iv_30d, rv_30d, vrp, vrp_zscore, skew_25d_zscore
                    FROM daily_volatility
-                   WHERE symbol = ? AND vrp_zscore IS NOT NULL
+                   WHERE symbol = ? AND iv_30d IS NOT NULL
                    ORDER BY date DESC LIMIT 1""",
                 (sym,),
             )
-            if row and abs(row[0]["vrp_zscore"] or 0) > 2:
-                r = row[0]
-                vrp_z = r["vrp_zscore"]
-                short_name = sym.replace("USDT", "")
-                vol_status = "Rich Vol (опционы дорогие)" if vrp_z > 0 else "Cheap Vol (опционы дешёвые)"
+            if not row:
+                continue
+            r = row[0]
+            iv = r["iv_30d"] or 0
+            rv = r["rv_30d"] or 0
+            vrp_z = r["vrp_zscore"] or 0
+            skew_z = r["skew_25d_zscore"] or 0
+            short_name = sym.replace("USDT", "")
+            sym_data = current.get(sym, {})
+
+            # Vol compression: IV & RV both < 30% = breakout imminent
+            if iv > 0 and rv > 0 and iv < 30 and rv < 30:
                 alerts.append({
-                    "key": f"vol_breakout:{sym}",
-                    "title": f"🌊 {short_name} VRP Z-Score {vrp_z:+.1f}",
+                    "key": f"vol_compression:{sym}",
+                    "title": f"🌊 {short_name} VOL COMPRESSION — IV {iv:.0f}% + RV {rv:.0f}%",
                     "body": _format_alert_body(
                         what_we_see=[
-                            f"IV: {r['iv_30d']:.0f}%, RV: {r['rv_30d']:.0f}%" if r["iv_30d"] and r["rv_30d"] else "IV/RV data",
-                            f"VRP: {r['vrp']:+.0f}%" if r["vrp"] else "",
-                            f"VRP_z: {vrp_z:+.1f} — {vol_status}",
+                            f"IV: {iv:.0f}% | RV: {rv:.0f}% | VRP: {r['vrp']:+.0f}%" if r["vrp"] else f"IV: {iv:.0f}% | RV: {rv:.0f}%",
+                            f"VRP_z: {vrp_z:+.1f} | Skew_z: {skew_z:+.1f}",
+                            f"OI_z: {sym_data.get('oi_z', 0):+.1f} | Fund_z: {sym_data.get('funding_z', 0):+.1f}",
                         ],
                         indicators=[
-                            f"{'Sell vol: стрэддлы/стрэнглы переоценены' if vrp_z > 0 else 'Buy vol: breakout probability high'}",
+                            "IV и RV оба ниже 30% — историческое сжатие",
+                            "Breakout imminent — направление определят метрики",
+                            f"{'Skew puts > calls — рынок боится падения' if skew_z > 1 else 'Skew neutral' if abs(skew_z) < 1 else 'Skew calls > puts — рынок ждёт роста'}",
                         ],
                         action=[
-                            f"{'Продавать волатильность (sell straddles)' if vrp_z > 0 else 'Покупать волатильность (buy straddles), готовиться к breakout'}",
+                            "Покупать волатильность (long straddle/strangle)",
+                            "Уменьшить размер позиций — breakout в любую сторону",
                         ],
                     ),
                 })
+
+            # VRP extreme + skew alignment = panic or euphoria
+            if abs(vrp_z) > 2 and abs(skew_z) > 1:
+                if vrp_z > 2 and skew_z > 1:
+                    # Panic: puts expensive + vol rich = panic hedging
+                    alerts.append({
+                        "key": f"vol_panic:{sym}",
+                        "title": f"😱 {short_name} ПАНИКА — VRP_z {vrp_z:+.1f} + Skew_z {skew_z:+.1f}",
+                        "body": _format_alert_body(
+                            what_we_see=[
+                                f"IV: {iv:.0f}% | RV: {rv:.0f}% | VRP_z: {vrp_z:+.1f}",
+                                f"Skew_z: {skew_z:+.1f} (путы дорогие)",
+                                f"OI_z: {sym_data.get('oi_z', 0):+.1f} | Fund_z: {sym_data.get('funding_z', 0):+.1f}",
+                            ],
+                            indicators=[
+                                "Rich Vol + путы переоценены = панический хедж",
+                                "Исторически — contrarian long opportunity",
+                            ],
+                            action=[
+                                "Искать лонг на зоне интереса (contrarian)",
+                                "Sell vol: продавать путы / strangles",
+                            ],
+                        ),
+                    })
+                elif vrp_z < -2 and skew_z < -1:
+                    # Euphoria: calls expensive + vol cheap = complacency
+                    alerts.append({
+                        "key": f"vol_euphoria:{sym}",
+                        "title": f"🎪 {short_name} ЭЙФОРИЯ — VRP_z {vrp_z:+.1f} + Skew_z {skew_z:+.1f}",
+                        "body": _format_alert_body(
+                            what_we_see=[
+                                f"IV: {iv:.0f}% | RV: {rv:.0f}% | VRP_z: {vrp_z:+.1f}",
+                                f"Skew_z: {skew_z:+.1f} (коллы дорогие)",
+                                f"OI_z: {sym_data.get('oi_z', 0):+.1f} | Fund_z: {sym_data.get('funding_z', 0):+.1f}",
+                            ],
+                            indicators=[
+                                "Cheap Vol + коллы переоценены = рыночная эйфория",
+                                "Buy vol: breakout/коррекция вероятны",
+                            ],
+                            action=[
+                                "Искать шорт на наклонной сверху",
+                                "Buy vol: покупать путы / straddles",
+                            ],
+                        ),
+                    })
     except Exception as e:
-        log.warning(f"Vol breakout check error: {e}")
+        log.warning(f"Vol alert check error: {e}")
 
     # Update snapshot
     _prev_snapshot = current
 
     return alerts
-
-
-def _build_zscore_alert(key: str, sym: str, metric_label: str, z: float,
-                        direction: str, data: dict) -> dict:
-    """Build a z-score crossing alert."""
-    oi_usd = data.get("open_interest_usd", 0)
-    price_chg = data.get("price_change_24h_pct", 0)
-    oi_chg = data.get("oi_change_24h_pct", 0)
-    fund_rate = data.get("funding_rate", 0)
-    fund_z = data.get("funding_z", 0)
-
-    # Strategy reference based on metric
-    strategy_lines = {
-        "OI": [
-            f"OI extreme → cascade liquidation probability {'high' if z > 0 else 'low'}",
-            f"{'НЕ открывать лонги при OI_z > +2' if z > 0 else 'Искать лонг: вымытость позиций'}",
-        ],
-        "Funding": [
-            f"Funding extreme → mean reversion zone",
-            f"{'Ищем шорт (longs paying heavily)' if z > 0 else 'Ищем лонг (shorts paying heavily)'}",
-        ],
-        "Liq": [
-            "Liq cascade → bounce expected after flush",
-            "Ждать flush (OI drop + liq spike) для entry long",
-        ],
-        "Volume": [
-            f"Volume extreme → {'кульминация или breakout' if z > 0 else 'затухание активности'}",
-            "Проверить совпадение с пробоем уровня",
-        ],
-    }
-
-    return {
-        "key": key,
-        "title": f"{direction} ALERT: {sym} {metric_label} Z-Score {z:+.1f}",
-        "body": _format_alert_body(
-            what_we_see=[
-                f"OI {_fmt_usd(oi_usd)} ({_fmt_pct(oi_chg)} 24h), Price {_fmt_pct(price_chg)}",
-                f"Funding {fund_rate * 100:.4f}% (z: {fund_z:+.1f})",
-            ],
-            indicators=strategy_lines.get(metric_label, ["Z-score crossed ±2 threshold"]),
-            action=[
-                strategy_lines.get(metric_label, ["Monitor"])[1] if len(strategy_lines.get(metric_label, [])) > 1 else "Monitor",
-            ],
-        ),
-    }
 
 
 def _format_alert_body(what_we_see: list[str], indicators: list[str], action: list[str]) -> str:
