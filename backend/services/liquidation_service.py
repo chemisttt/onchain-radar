@@ -346,7 +346,9 @@ async def compute_liq_clusters(symbol: str) -> dict:
         })
 
     clusters.sort(key=lambda x: x["volume_usd"], reverse=True)
-    result = {"current_price": current_price, "clusters": clusters[:30]}
+    clusters = clusters[:30]
+    clusters.sort(key=lambda x: x["level_price"])
+    result = {"current_price": current_price, "clusters": clusters}
     _cluster_cache[sym] = (now, result)
     return result
 
