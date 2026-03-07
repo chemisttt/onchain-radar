@@ -754,7 +754,10 @@ async def _build_screener() -> list[dict]:
             "price_change_24h_pct": r["price_change_24h_pct"] or 0,
             "percentile_avg": round((oi_p + fund_p + liq_p + vol_p) / 4, 1),
             "ob_depth_usd": 0,
+            "ob_skew": 0,
             "ob_skew_zscore": 0,
+            "momentum_value": 0,
+            "momentum_di": 0,
         }
         result.append(row_data)
 
@@ -766,7 +769,23 @@ async def _build_screener() -> list[dict]:
             sym = row_data["symbol"]
             ob_data = ob.get(sym, {})
             row_data["ob_depth_usd"] = ob_data.get("ob_depth", 0)
+            row_data["ob_skew"] = ob_data.get("ob_skew", 0)
             row_data["ob_skew_zscore"] = ob_data.get("ob_skew_zscore", 0)
+    except Exception:
+        pass
+
+    # Merge momentum data
+    try:
+        mom_rows = await db.execute_fetchall(
+            """SELECT symbol, momentum_value, directional_intensity
+               FROM daily_momentum
+               WHERE date = (SELECT MAX(date) FROM daily_momentum)"""
+        )
+        mom_map = {r["symbol"]: r for r in mom_rows}
+        for row_data in result:
+            m = mom_map.get(row_data["symbol"], {})
+            row_data["momentum_value"] = m.get("momentum_value", 0) or 0
+            row_data["momentum_di"] = m.get("directional_intensity", 0) or 0
     except Exception:
         pass
 

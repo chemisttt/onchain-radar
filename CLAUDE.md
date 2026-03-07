@@ -65,6 +65,25 @@ Personal derivatives analytics dashboard. Real-time monitoring of OI, funding, l
 - Liq WS batch flush: 3 events OR 10 seconds (whichever first)
 - Route order in derivatives.py: specific paths BEFORE `{symbol}` catch-all
 
+## Subagents & Commands
+
+Use project subagents (`.claude/agents/`) to save context. Prefer subagents for exploration and investigation — only read files directly when the exact path is known.
+
+| Agent | When to use |
+|-------|-------------|
+| `backend-expert` | Python/FastAPI services, DB schema, z-scores, polling logic |
+| `frontend-expert` | React components, Recharts charts, hooks, Tailwind styling |
+| `explorer` | "Where is X", find references, trace data flow (runs on haiku — fast & cheap) |
+| `debugger` | Something is broken — traces root cause, doesn't modify files |
+| `reviewer` | After changes: tsc + eslint + build + python check → update docs → git commit |
+| `skill-researcher` | Before implementation: finds patterns/snippets from global skills |
+
+Slash commands (`.claude/skills/`):
+- `/find-bug <description>` — investigate bug via debugger agent, no modifications
+- `/impact <what's changing>` — analyze affected files via explorer agent
+- `/review` — full pipeline: review → update docs → commit (stops on failures)
+- `/deploy` — push to remote → SSH pull + systemctl restart → health check (one SSH attempt)
+
 ## UI Rules
 
 - Dark theme: bg `#0c0c0c`, card border `#1a1a1a`

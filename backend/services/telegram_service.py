@@ -21,7 +21,12 @@ _task: asyncio.Task | None = None
 
 POLL_INTERVAL = 60  # check every 60 seconds
 DIGEST_HOUR_UTC = 18  # 18:00 UTC = 21:00 MSK
-ALERT_COOLDOWN = 3600  # 1 hour per alert key
+ALERT_COOLDOWNS = {
+    "SETUP": 14400,    # 4 hours
+    "SIGNAL": 7200,    # 2 hours
+    "TRIGGER": 1800,   # 30 minutes
+}
+DEFAULT_COOLDOWN = 3600  # fallback 1 hour
 INITIAL_DELAY = 30  # wait for services to warm up
 
 # State
@@ -121,8 +126,10 @@ async def _poll_loop():
 
                     for alert in alerts:
                         key = alert["key"]
-                        # Cooldown check
-                        if now_ts - _alert_cooldowns.get(key, 0) < ALERT_COOLDOWN:
+                        tier = alert.get("tier", "")
+                        cooldown = ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
+                        # Cooldown check — shorter for higher tiers
+                        if now_ts - _alert_cooldowns.get(key, 0) < cooldown:
                             continue
 
                         text = f"<b>{alert['title']}</b>\n\n{alert['body']}"
