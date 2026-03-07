@@ -395,6 +395,7 @@ def _build_directional_alert(
         "price_change_pct": price_chg,
         "tier": tier,
         "confluence": confluence,
+        "entry_price": cur["price"],
         "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} {title_suffix}",
         "body": _format_alert_body(what_we_see, indicators, action, tier, confluence),
     }
@@ -572,6 +573,11 @@ async def check_alerts() -> list[dict]:
             if tier:
                 for cluster in liq_clusters:
                     direction = cluster["direction"]
+                    # Directional filter: skip safe-side clusters
+                    if is_bullish is True and direction == "long":
+                        continue  # bullish → longs are safe
+                    if is_bullish is False and direction == "short":
+                        continue  # bearish → shorts are safe
                     dist = cluster["distance_pct"]
                     lev_price = cluster["level_price"]
                     leverage = cluster["leverage"]
@@ -590,6 +596,7 @@ async def check_alerts() -> list[dict]:
                         "price_change_pct": price_chg,
                         "tier": tier,
                         "confluence": confluence,
+                        "entry_price": price,
                         "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
                         "body": _format_alert_body(
                             what_we_see,
@@ -628,6 +635,7 @@ async def check_alerts() -> list[dict]:
                     "price_change_pct": price_chg,
                     "tier": tier,
                     "confluence": ob_confluence,
+                    "entry_price": price,
                     "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} OB DIVERGENCE — {trap_type}",
                     "body": _format_alert_body(
                         what_we_see=[
@@ -725,6 +733,7 @@ def _check_regime_transition(current: dict[str, dict]) -> dict | None:
                 "price_change_pct": 0,
                 "tier": tier,
                 "confluence": 6,
+                "entry_price": 0,
                 "title": f"{TIER_EMOJI[tier]} {tier} | REGIME SHIFT: {prev_label} → {cur_label}",
                 "body": _format_alert_body(
                     what_we_see=[
@@ -782,6 +791,7 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                     "price_change_pct": sym_data.get("price_change_24h_pct", 0),
                     "tier": tier,
                     "confluence": 4,
+                    "entry_price": sym_data.get("price", 0),
                     "title": f"{TIER_EMOJI[tier]} {tier} | {short_name} VOL COMPRESSION — IV {iv:.0f}% + RV {rv:.0f}%",
                     "body": _format_alert_body(
                         what_we_see=[
@@ -814,6 +824,7 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                         "price_change_pct": sym_data.get("price_change_24h_pct", 0),
                         "tier": tier,
                         "confluence": conf,
+                        "entry_price": sym_data.get("price", 0),
                         "title": f"{TIER_EMOJI[tier]} {tier} | {short_name} ПАНИКА — VRP_z {vrp_z:+.1f} + Skew_z {skew_z:+.1f}",
                         "body": _format_alert_body(
                             what_we_see=[
@@ -842,6 +853,7 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                         "price_change_pct": sym_data.get("price_change_24h_pct", 0),
                         "tier": tier,
                         "confluence": conf,
+                        "entry_price": sym_data.get("price", 0),
                         "title": f"{TIER_EMOJI[tier]} {tier} | {short_name} ЭЙФОРИЯ — VRP_z {vrp_z:+.1f} + Skew_z {skew_z:+.1f}",
                         "body": _format_alert_body(
                             what_we_see=[
@@ -867,10 +879,193 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
     return alerts
 
 
+# ── Forward tracking ─────────────────────────────────────────────────
+
+_EXPECTED_DIRECTION = {
+    "overheat": "down",
+    "capitulation": "up",
+    "divergence_squeeze": "down",
+    "divergence_top": "down",
+    "liq_flush": "up",
+    "liq_proximity": None,  # depends on cluster direction
+    "ob_divergence": None,
+    "vol_anomaly": None,
+    "regime_transition": None,
+    "vol_compression": None,
+    "vol_panic": "up",
+    "vol_euphoria": "down",
+}
+
+
+def _expected_direction(alert: dict) -> str | None:
+    """Infer expected price direction from alert type."""
+    key = alert.get("key", "")
+    alert_type = key.split(":")[0] if ":" in key else key
+    direction = _EXPECTED_DIRECTION.get(alert_type)
+    if direction is not None:
+        return direction
+    # liq_proximity: short cluster → up (squeeze), long cluster → down
+    if alert_type == "liq_proximity" and ":short:" in key:
+        return "up"
+    if alert_type == "liq_proximity" and ":long:" in key:
+        return "down"
+    # ob_divergence: price up + asks heavy → down, price down + bids heavy → up
+    if alert_type == "ob_divergence":
+        return "down" if alert.get("price_change_pct", 0) > 0 else "up"
+    # vol_anomaly: follows price direction
+    if alert_type == "vol_anomaly":
+        return "up" if alert.get("price_change_pct", 0) > 0 else "down"
+    return None
+
+
+async def record_alert(alert: dict) -> None:
+    """Record a fired alert for forward tracking."""
+    try:
+        db = get_db()
+        key = alert.get("key", "")
+        alert_type = key.split(":")[0] if ":" in key else key
+        await db.execute(
+            """INSERT INTO alert_tracking
+               (alert_key, alert_type, symbol, tier, confluence, fired_at, entry_price, expected_direction)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                key,
+                alert_type,
+                alert.get("symbol", ""),
+                alert.get("tier", ""),
+                alert.get("confluence", 0),
+                datetime.now(timezone.utc).isoformat(),
+                alert.get("entry_price", 0),
+                _expected_direction(alert),
+            ),
+        )
+        await db.commit()
+    except Exception as e:
+        log.warning(f"record_alert error: {e}")
+
+
+async def update_forward_returns() -> None:
+    """Fill in forward returns for tracked alerts using daily_derivatives prices."""
+    try:
+        db = get_db()
+        rows = await db.execute_fetchall(
+            """SELECT id, symbol, fired_at, entry_price
+               FROM alert_tracking
+               WHERE entry_price > 0
+                 AND (return_1d IS NULL OR return_3d IS NULL OR return_7d IS NULL)""",
+        )
+        if not rows:
+            return
+
+        now = datetime.now(timezone.utc)
+        updated = 0
+        for row in rows:
+            fired_at = datetime.fromisoformat(row["fired_at"])
+            hours_since = (now - fired_at).total_seconds() / 3600
+            entry = row["entry_price"]
+            sym = row["symbol"]
+            if entry <= 0 or sym == "GLOBAL":
+                continue
+
+            updates = {}
+            # Check each horizon
+            for days, price_col, return_col in [
+                (1, "price_1d", "return_1d"),
+                (3, "price_3d", "return_3d"),
+                (7, "price_7d", "return_7d"),
+            ]:
+                if hours_since < days * 24:
+                    continue
+                # Check if already filled
+                existing = await db.execute_fetchall(
+                    f"SELECT {return_col} FROM alert_tracking WHERE id = ?",
+                    (row["id"],),
+                )
+                if existing and existing[0][return_col] is not None:
+                    continue
+                # Get price from daily_derivatives
+                price_row = await db.execute_fetchall(
+                    """SELECT close_price FROM daily_derivatives
+                       WHERE symbol = ? AND date >= date(?, '+' || ? || ' days')
+                       AND close_price IS NOT NULL
+                       ORDER BY date ASC LIMIT 1""",
+                    (sym, fired_at.strftime("%Y-%m-%d"), days),
+                )
+                if price_row and price_row[0]["close_price"]:
+                    p = price_row[0]["close_price"]
+                    ret = (p - entry) / entry * 100
+                    updates[price_col] = p
+                    updates[return_col] = round(ret, 2)
+
+            if updates:
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                vals = list(updates.values()) + [row["id"]]
+                await db.execute(
+                    f"UPDATE alert_tracking SET {set_clause} WHERE id = ?",
+                    vals,
+                )
+                updated += 1
+
+        if updated:
+            await db.commit()
+            log.info(f"Updated forward returns for {updated} alerts")
+    except Exception as e:
+        log.warning(f"update_forward_returns error: {e}")
+
+
+async def _build_performance_section() -> str:
+    """Build alert performance section for digest (last 7 days)."""
+    try:
+        db = get_db()
+        rows = await db.execute_fetchall(
+            """SELECT alert_type, expected_direction, return_1d
+               FROM alert_tracking
+               WHERE fired_at >= datetime('now', '-7 days')
+                 AND return_1d IS NOT NULL
+                 AND expected_direction IS NOT NULL""",
+        )
+        if not rows or len(rows) < 3:
+            return ""
+
+        by_type: dict[str, list[float]] = {}
+        for r in rows:
+            atype = r["alert_type"]
+            ret = r["return_1d"]
+            expected = r["expected_direction"]
+            # Normalize: positive return = correct direction
+            normalized = ret if expected == "up" else -ret
+            by_type.setdefault(atype, []).append(normalized)
+
+        lines = ["📊 <b>РЕЗУЛЬТАТЫ АЛЕРТОВ (7 дней):</b>"]
+        total_count = 0
+        total_correct = 0
+        for atype, returns in sorted(by_type.items(), key=lambda x: len(x[1]), reverse=True):
+            count = len(returns)
+            correct = sum(1 for r in returns if r > 0)
+            accuracy = correct / count * 100 if count else 0
+            avg_ret = sum(returns) / count if count else 0
+            emoji = "✅" if accuracy >= 60 else "⚠️" if accuracy >= 45 else "❌"
+            lines.append(f"• {emoji} {atype}: {count} алертов, точность {accuracy:.0f}%, avg {avg_ret:+.1f}%")
+            total_count += count
+            total_correct += correct
+
+        if total_count:
+            total_acc = total_correct / total_count * 100
+            lines.append(f"Итого: {total_count} алертов, точность {total_acc:.0f}%")
+        lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        log.warning(f"_build_performance_section error: {e}")
+        return ""
+
+
 # ── Daily Digest ─────────────────────────────────────────────────────
 
 async def build_daily_digest() -> list[str]:
     """Build full HTML market digest. Returns list of messages (split if >4096)."""
+    # Update forward returns before building digest
+    await update_forward_returns()
+
     screener = await derivatives_service.get_screener(sort="oi_zscore", limit=30)
     if not screener:
         return ["⚠️ No screener data available for digest."]
@@ -931,6 +1126,11 @@ async def build_daily_digest() -> list[str]:
     vel_section = _build_velocity_section(screener)
     if vel_section:
         parts.append(vel_section)
+
+    # 7.5. Alert performance
+    perf_section = await _build_performance_section()
+    if perf_section:
+        parts.append(perf_section)
 
     # 8. Liq Proximity (NEW)
     liq_section = await _build_liq_proximity_section(screener)

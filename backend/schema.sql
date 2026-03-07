@@ -168,3 +168,25 @@ CREATE TABLE IF NOT EXISTS verified_contracts (
 );
 CREATE INDEX IF NOT EXISTS idx_verified_chain ON verified_contracts(chain);
 CREATE INDEX IF NOT EXISTS idx_verified_address ON verified_contracts(address);
+
+-- Persistent alert cooldowns (survive restarts)
+CREATE TABLE IF NOT EXISTS alert_cooldowns (
+    key TEXT PRIMARY KEY,
+    fired_at REAL NOT NULL
+);
+
+-- Forward tracking of alert results
+CREATE TABLE IF NOT EXISTS alert_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_key TEXT NOT NULL,
+    alert_type TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    tier TEXT NOT NULL,
+    confluence INTEGER,
+    fired_at TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    expected_direction TEXT,
+    price_1d REAL, price_3d REAL, price_7d REAL,
+    return_1d REAL, return_3d REAL, return_7d REAL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_tracking_fired ON alert_tracking(fired_at);

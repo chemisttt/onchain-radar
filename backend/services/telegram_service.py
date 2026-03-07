@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import aiohttp
 
 from config import settings
+from db import get_db
 from services import market_analyzer
 
 log = logging.getLogger("telegram")
@@ -39,6 +40,59 @@ ALT_MIN_PRICE_CHANGE = 20.0  # % — threshold for alts to bypass TRIGGER requir
 # State
 _last_digest_date: str = ""
 _alert_cooldowns: dict[str, float] = {}  # key → timestamp of last fire
+_last_cleanup: float = 0.0
+
+
+async def _load_cooldowns() -> None:
+    """Load cooldowns from DB (survive restarts)."""
+    global _alert_cooldowns
+    try:
+        db = get_db()
+        rows = await db.execute_fetchall("SELECT key, fired_at FROM alert_cooldowns")
+        now = time.time()
+        loaded = 0
+        for row in rows:
+            if now - row["fired_at"] < 86400:  # skip entries older than 24h
+                _alert_cooldowns[row["key"]] = row["fired_at"]
+                loaded += 1
+        log.info(f"Loaded {loaded} cooldowns from DB")
+    except Exception as e:
+        log.warning(f"Failed to load cooldowns: {e}")
+
+
+async def _save_cooldown(key: str, ts: float) -> None:
+    """Persist a cooldown entry to DB."""
+    try:
+        db = get_db()
+        await db.execute(
+            "INSERT OR REPLACE INTO alert_cooldowns (key, fired_at) VALUES (?, ?)",
+            (key, ts),
+        )
+        await db.commit()
+    except Exception as e:
+        log.warning(f"Failed to save cooldown: {e}")
+
+
+async def _cleanup_cooldowns() -> None:
+    """Remove cooldown entries older than 24h. Run once per hour."""
+    global _last_cleanup
+    now = time.time()
+    if now - _last_cleanup < 3600:
+        return
+    _last_cleanup = now
+    try:
+        db = get_db()
+        cutoff = now - 86400
+        await db.execute("DELETE FROM alert_cooldowns WHERE fired_at < ?", (cutoff,))
+        await db.commit()
+        # Also clean in-memory
+        expired = [k for k, ts in _alert_cooldowns.items() if ts < cutoff]
+        for k in expired:
+            del _alert_cooldowns[k]
+        if expired:
+            log.info(f"Cleaned up {len(expired)} expired cooldowns")
+    except Exception as e:
+        log.warning(f"Cooldown cleanup error: {e}")
 
 
 async def _send_message(text: str, session: aiohttp.ClientSession) -> bool:
@@ -112,6 +166,7 @@ async def _poll_loop():
 
     # Wait for other services to populate caches
     await asyncio.sleep(INITIAL_DELAY)
+    await _load_cooldowns()
 
     while True:
         try:
@@ -132,7 +187,10 @@ async def _poll_loop():
                     except Exception as e:
                         log.error(f"Digest error: {e}")
 
-                # 2. Alert check
+                # 2. Cleanup expired cooldowns (once per hour)
+                await _cleanup_cooldowns()
+
+                # 3. Alert check
                 try:
                     alerts = await market_analyzer.check_alerts()
                     now_ts = time.time()
@@ -167,6 +225,8 @@ async def _poll_loop():
                         sent = await _send_message(text, session)
                         if sent:
                             _alert_cooldowns[key] = now_ts
+                            await _save_cooldown(key, now_ts)
+                            await market_analyzer.record_alert(alert)
                             sent_count += 1
                             log.info(f"Alert sent: {key}")
                         await asyncio.sleep(0.5)
