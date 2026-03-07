@@ -552,9 +552,9 @@ async def check_alerts() -> list[dict]:
 
         # ── STRUCTURAL ALERTS ────────────────────────────────
 
-        # 5. LIQ PROXIMITY
+        # 5. LIQ PROXIMITY — require at least SIGNAL-level confluence
         if liq_prox:
-            prox_confluence = max(confluence, CONFLUENCE_SETUP)
+            prox_confluence = max(confluence, CONFLUENCE_SIGNAL)
             tier = _score_to_tier(prox_confluence)
             if tier:
                 direction = liq_prox["direction"]

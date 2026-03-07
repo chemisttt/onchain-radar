@@ -22,11 +22,13 @@ _task: asyncio.Task | None = None
 POLL_INTERVAL = 60  # check every 60 seconds
 DIGEST_HOUR_UTC = 18  # 18:00 UTC = 21:00 MSK
 ALERT_COOLDOWNS = {
-    "SETUP": 14400,    # 4 hours
-    "SIGNAL": 7200,    # 2 hours
-    "TRIGGER": 1800,   # 30 minutes
+    "SIGNAL": 14400,   # 4 hours
+    "TRIGGER": 3600,   # 1 hour
 }
-DEFAULT_COOLDOWN = 3600  # fallback 1 hour
+DEFAULT_COOLDOWN = 7200  # fallback 2 hours
+# SETUP tier is too noisy for Telegram — only send SIGNAL and TRIGGER
+TELEGRAM_MIN_TIER = "SIGNAL"
+TIER_PRIORITY = {"SETUP": 0, "SIGNAL": 1, "TRIGGER": 2}
 INITIAL_DELAY = 30  # wait for services to warm up
 
 # State
@@ -127,8 +129,12 @@ async def _poll_loop():
                     for alert in alerts:
                         key = alert["key"]
                         tier = alert.get("tier", "")
+
+                        # Skip low-quality alerts
+                        if TIER_PRIORITY.get(tier, 0) < TIER_PRIORITY.get(TELEGRAM_MIN_TIER, 1):
+                            continue
+
                         cooldown = ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
-                        # Cooldown check — shorter for higher tiers
                         if now_ts - _alert_cooldowns.get(key, 0) < cooldown:
                             continue
 
