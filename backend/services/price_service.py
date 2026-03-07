@@ -16,7 +16,7 @@ from services.derivatives_service import SYMBOLS
 log = logging.getLogger("price_service")
 
 POLL_INTERVAL = 300  # 5 min
-BACKFILL_LIMIT = 500  # ~83 days of 4h candles
+BACKFILL_LIMIT = 2200  # ~1 year of 4h candles
 LIVE_LIMIT = 3
 FETCH_DELAY = 0.2  # between symbols on backfill
 
@@ -67,12 +67,11 @@ async def _poll_loop():
 
 
 async def _backfill():
-    """Fetch 500 4h candles per symbol on first run."""
+    """Fetch ~1 year of 4h candles per symbol via paginated klines."""
     db = get_db()
     count = 0
     async with aiohttp.ClientSession() as session:
         for sym in SYMBOLS:
-            # Check if already have data
             cursor = await db.execute(
                 "SELECT COUNT(*) as cnt FROM ohlcv_4h WHERE symbol = ?", (sym,)
             )
@@ -81,10 +80,11 @@ async def _backfill():
                 count += 1
                 continue
 
-            candles = await _fetch_klines(session, sym, BACKFILL_LIMIT)
+            candles = await _fetch_klines_paginated(session, sym, BACKFILL_LIMIT)
             if candles:
                 await _upsert_candles(db, sym, candles)
                 count += 1
+                log.info(f"Backfilled {sym}: {len(candles)} candles")
             await asyncio.sleep(FETCH_DELAY)
 
     await db.commit()
@@ -131,6 +131,44 @@ async def _fetch_klines(
     except Exception as e:
         log.warning(f"Klines fetch error {symbol}: {e}")
         return []
+
+
+async def _fetch_klines_paginated(
+    session: aiohttp.ClientSession, symbol: str, total: int
+) -> list[tuple]:
+    """Fetch up to `total` 4h klines via pagination (max 1500/page)."""
+    all_candles: list[tuple] = []
+    end_time = None
+    per_page = 1500
+
+    while len(all_candles) < total:
+        url = "https://fapi.binance.com/fapi/v1/klines"
+        params: dict = {"symbol": symbol, "interval": "4h", "limit": per_page}
+        if end_time is not None:
+            params["endTime"] = end_time
+        try:
+            async with session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status != 200:
+                    break
+                data = await resp.json()
+                if not data:
+                    break
+                page = [
+                    (int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]))
+                    for k in data
+                ]
+                all_candles = page + all_candles
+                end_time = int(data[0][0]) - 1  # before oldest in this page
+                if len(data) < per_page:
+                    break  # no more data
+        except Exception as e:
+            log.warning(f"Paginated klines error {symbol}: {e}")
+            break
+        await asyncio.sleep(0.15)
+
+    return all_candles[-total:] if len(all_candles) > total else all_candles
 
 
 async def _upsert_candles(db, symbol: str, candles: list[tuple]):
