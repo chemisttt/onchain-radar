@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { createChart, createSeriesMarkers, CandlestickSeries, LineSeries, type IChartApi, type ISeriesApi, type Time, type UTCTimestamp, type SeriesMarker } from 'lightweight-charts'
 import { useBacktest, type BacktestAlert } from '../../hooks/useBacktest'
 
-type Range = '1W' | '1M' | '3M'
+type Range = '1W' | '1M' | '3M' | '6M' | '1Y'
 type Timeframe = '1d' | '4h' | 'mtf'
 
 const TIER_COLORS: Record<string, string> = {
@@ -244,7 +244,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
       {/* Controls + Stats */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-[#0a0a0a] border-b border-[#1a1a1a] flex-shrink-0">
         <span className="text-[10px] text-[#555] mr-1">Range:</span>
-        {(['1W', '1M', '3M'] as Range[]).map((r) => (
+        {(['1W', '1M', '3M', '6M', '1Y'] as Range[]).map((r) => (
           <button
             key={r}
             onClick={() => setRange(r)}

@@ -56,11 +56,11 @@ async def get_orderbook():
 @router.get("/derivatives/backtest/{symbol}")
 async def get_backtest(
     symbol: str,
-    range: str = Query("1M", pattern="^(1W|1M|3M)$"),
+    range: str = Query("1M", pattern="^(1W|1M|3M|6M|1Y)$"),
     timeframe: str = Query("1d", pattern="^(1d|4h|mtf)$"),
 ):
     """Backtest view: 4h candles + fired alerts + price structure."""
-    candle_limits = {"1W": 42, "1M": 180, "3M": 540}
+    candle_limits = {"1W": 42, "1M": 180, "3M": 540, "6M": 1080, "1Y": 2190}
     limit = candle_limits[range]
 
     db = get_db()
@@ -119,7 +119,7 @@ async def get_backtest(
             "timeframe": "1d",
         })
 
-    sim_days = {"1W": 7, "1M": 30, "3M": 90}
+    sim_days = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
 
     # Simulated alerts based on timeframe
     simulated_1d = []
