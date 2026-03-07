@@ -191,6 +191,20 @@ CREATE TABLE IF NOT EXISTS alert_tracking (
 );
 CREATE INDEX IF NOT EXISTS idx_alert_tracking_fired ON alert_tracking(fired_at);
 
+-- 4h derivatives snapshots (OI/funding/liq aggregated from 4 exchanges)
+CREATE TABLE IF NOT EXISTS derivatives_4h (
+    symbol TEXT NOT NULL,
+    ts INTEGER NOT NULL,          -- 4h boundary timestamp (ms)
+    close_price REAL,
+    open_interest_usd REAL,
+    funding_rate REAL,
+    liquidations_long REAL DEFAULT 0,
+    liquidations_short REAL DEFAULT 0,
+    liquidations_delta REAL DEFAULT 0,
+    volume_usd REAL,
+    PRIMARY KEY (symbol, ts)
+);
+
 -- 4h OHLCV candles for price structure analysis
 CREATE TABLE IF NOT EXISTS ohlcv_4h (
     symbol TEXT NOT NULL,

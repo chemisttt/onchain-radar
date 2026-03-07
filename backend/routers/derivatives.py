@@ -57,6 +57,7 @@ async def get_orderbook():
 async def get_backtest(
     symbol: str,
     range: str = Query("1M", pattern="^(1W|1M|3M)$"),
+    timeframe: str = Query("1d", pattern="^(1d|4h|mtf)$"),
 ):
     """Backtest view: 4h candles + fired alerts + price structure."""
     candle_limits = {"1W": 42, "1M": 180, "3M": 540}
@@ -115,11 +116,34 @@ async def get_backtest(
             "return_3d": a["return_3d"],
             "return_7d": a["return_7d"],
             "simulated": False,
+            "timeframe": "1d",
         })
 
-    # Simulated alerts from backtest engine
     sim_days = {"1W": 7, "1M": 30, "3M": 90}
-    simulated = await backtest_service.simulate_alerts(symbol, days=sim_days[range])
+
+    # Simulated alerts based on timeframe
+    simulated_1d = []
+    simulated_4h = []
+
+    if timeframe in ("1d", "mtf"):
+        simulated_1d = await backtest_service.simulate_alerts(symbol, days=sim_days[range])
+        for a in simulated_1d:
+            a["timeframe"] = "1d"
+
+    if timeframe in ("4h", "mtf"):
+        simulated_4h = await backtest_service.simulate_alerts_4h(symbol, days=sim_days[range])
+
+    # MTF tier upgrade: 4h confirms 1d
+    if timeframe == "mtf" and simulated_4h and simulated_1d:
+        simulated_1d = backtest_service._apply_mtf_upgrade(simulated_4h, simulated_1d)
+
+    # Merge based on timeframe mode
+    if timeframe == "1d":
+        simulated = simulated_1d
+    elif timeframe == "4h":
+        simulated = simulated_4h
+    else:  # mtf — both
+        simulated = simulated_4h + simulated_1d
 
     # Filter simulated to chart time range
     if candles:

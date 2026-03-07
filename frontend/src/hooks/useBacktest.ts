@@ -28,6 +28,9 @@ export interface BacktestAlert {
   mfe_price?: number | null
   mae_return?: number | null
   simulated?: boolean
+  timeframe?: '1d' | '4h'
+  tier_upgraded?: boolean
+  original_tier?: string
   zscores?: { oi: number; funding: number; liq: number; volume: number }
 }
 
@@ -59,11 +62,11 @@ export interface BacktestData {
   stats: BacktestStats
 }
 
-export function useBacktest(symbol: string | null, range: string = '1M') {
+export function useBacktest(symbol: string | null, range: string = '1M', timeframe: string = '1d') {
   return useQuery<BacktestData>({
-    queryKey: ['backtest', symbol, range],
+    queryKey: ['backtest', symbol, range, timeframe],
     queryFn: async () =>
-      (await client.get(`/derivatives/backtest/${symbol}`, { params: { range } })).data,
+      (await client.get(`/derivatives/backtest/${symbol}`, { params: { range, timeframe } })).data,
     enabled: !!symbol,
     refetchInterval: 300_000, // 5 min
   })

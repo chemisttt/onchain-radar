@@ -22,8 +22,12 @@ Z_WINDOW = 365
 SMA_PERIOD = 20  # trend filter
 
 MIN_POINTS = 30
+MIN_POINTS_4H = 120  # ~20 days of 4h candles
 COOLDOWN_DAYS = 1  # per symbol:type
+COOLDOWN_CANDLES_4H = 6  # 1 day in 4h candles
 CLUSTER_GAP_DAYS = 2  # merge same-direction signals within N days
+CLUSTER_GAP_CANDLES_4H = 6  # cluster 4h signals within ~1 day
+Z_WINDOW_4H = 2190  # 6/day × 365 days
 
 
 def _zscore(values: list[float]) -> float:
@@ -523,3 +527,330 @@ def _compute_mfe(
         best = min(lows)
         mfe_ret = (entry_price - best) / entry_price * 100
         return mfe_ret, best
+
+
+def _compute_mfe_4h(
+    candle_data: list[tuple[int, float, float]],
+    ts_sec: int, direction: str, entry_price: float,
+    candles: int = 42,
+) -> tuple[float | None, float | None]:
+    """MFE for 4h alerts — window in seconds from ts."""
+    if not candle_data:
+        return None, None
+    end_ts = ts_sec + candles * 14400
+    highs, lows = [], []
+    for ts, high, low in candle_data:
+        if ts_sec <= ts <= end_ts:
+            highs.append(high)
+            lows.append(low)
+    if not highs:
+        return None, None
+    if direction == "long":
+        best = max(highs)
+        return (best - entry_price) / entry_price * 100, best
+    best = min(lows)
+    return (entry_price - best) / entry_price * 100, best
+
+
+def _compute_mae_4h(
+    candle_data: list[tuple[int, float, float]],
+    ts_sec: int, direction: str, entry_price: float,
+    candles: int = 42,
+) -> float | None:
+    """MAE for 4h alerts — worst move against position in N candles."""
+    if not candle_data:
+        return None
+    end_ts = ts_sec + candles * 14400
+    worst = 0.0
+    for ts, high, low in candle_data:
+        if ts_sec <= ts <= end_ts:
+            if direction == "long":
+                dd = (entry_price - low) / entry_price * 100
+            else:
+                dd = (high - entry_price) / entry_price * 100
+            worst = max(worst, dd)
+    return worst if worst > 0 else None
+
+
+async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
+    """Simulate historical alerts on 4h derivatives data."""
+    db = get_db()
+
+    rows = await db.execute_fetchall(
+        """SELECT ts, close_price, open_interest_usd, funding_rate,
+                  liquidations_long, liquidations_short, liquidations_delta, volume_usd
+           FROM derivatives_4h
+           WHERE symbol = ?
+           ORDER BY ts ASC""",
+        (symbol,),
+    )
+    if not rows or len(rows) < MIN_POINTS_4H + 10:
+        return []
+
+    timestamps = [r["ts"] // 1000 for r in rows]  # seconds
+    prices = [r["close_price"] or 0 for r in rows]
+    ois = [r["open_interest_usd"] or 0 for r in rows]
+    fundings = [r["funding_rate"] or 0 for r in rows]
+    liq_deltas = [r["liquidations_delta"] or 0 for r in rows]
+    liq_longs = [r["liquidations_long"] or 0 for r in rows]
+    liq_shorts = [r["liquidations_short"] or 0 for r in rows]
+    volumes = [r["volume_usd"] or 0 for r in rows]
+
+    # RV data for regime
+    rv_rows = await db.execute_fetchall(
+        "SELECT date, rv_30d FROM daily_rv WHERE symbol = ? ORDER BY date ASC",
+        (symbol,),
+    )
+    rv_by_date: dict[str, float] = {r["date"]: r["rv_30d"] for r in rv_rows if r["rv_30d"]}
+    rv_all = [v for v in rv_by_date.values() if v > 0]
+    rv_median_val = _median(rv_all) if rv_all else 0.0
+
+    # 4h OHLCV candles for MFE/MAE
+    ohlcv_rows = await db.execute_fetchall(
+        "SELECT ts, high, low FROM ohlcv_4h WHERE symbol = ? ORDER BY ts ASC",
+        (symbol,),
+    )
+    candle_data = [(r["ts"] // 1000, r["high"], r["low"]) for r in ohlcv_rows]
+
+    total = len(rows)
+    # How many candles correspond to requested days
+    candles_per_day = 6
+    lookback_candles = days * candles_per_day
+    warmup_end = max(MIN_POINTS_4H, total - lookback_candles)
+
+    SMA_PERIOD_4H = 120  # ~20 days
+
+    # Pre-compute OI z-scores for acceleration
+    oi_zscores_4h: list[float] = []
+    for i in range(total):
+        start = max(0, i - Z_WINDOW_4H + 1)
+        oi_zscores_4h.append(_zscore(ois[start:i + 1]))
+
+    alerts: list[dict] = []
+    cooldowns: dict[str, int] = {}  # "type:symbol" → last fired index
+
+    for i in range(warmup_end, total):
+        price = prices[i]
+        if price <= 0 or i == 0:
+            continue
+
+        ts_sec = timestamps[i]
+
+        # Trend filter
+        sma = _sma(prices[:i + 1], SMA_PERIOD_4H)
+        price_vs_sma = ((price - sma) / sma * 100) if sma > 0 else 0
+        if price_vs_sma > 2:
+            trend = "up"
+        elif price_vs_sma < -2:
+            trend = "down"
+        else:
+            trend = "neutral"
+
+        # Rolling z-scores
+        start = max(0, i - Z_WINDOW_4H + 1)
+        oi_z = oi_zscores_4h[i]
+        fund_z = _zscore(fundings[start:i + 1])
+        liq_z = _zscore(liq_deltas[start:i + 1])
+        vol_z = _zscore(volumes[start:i + 1])
+        liq_long_z = _zscore(liq_longs[start:i + 1])
+        liq_short_z = _zscore(liq_shorts[start:i + 1])
+
+        # 1-candle changes (4h → thresholds ÷3 vs daily)
+        prev_price = prices[i - 1]
+        prev_oi = ois[i - 1]
+        price_chg = ((price - prev_price) / prev_price * 100) if prev_price > 0 else 0
+        oi_chg = ((ois[i] - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
+
+        # 6-candle (~1d) changes — ≈ daily 1d thresholds
+        idx_6 = max(0, i - 6)
+        price_chg_6 = ((price - prices[idx_6]) / prices[idx_6] * 100) if prices[idx_6] > 0 else 0
+        oi_chg_6 = ((ois[i] - ois[idx_6]) / ois[idx_6] * 100) if ois[idx_6] > 0 else 0
+
+        # 18-candle (~3d) changes
+        idx_18 = max(0, i - 18)
+        price_chg_18 = ((price - prices[idx_18]) / prices[idx_18] * 100) if prices[idx_18] > 0 else 0
+        oi_chg_18 = ((ois[i] - ois[idx_18]) / ois[idx_18] * 100) if ois[idx_18] > 0 else 0
+
+        # 30-candle (~5d) momentum
+        idx_30 = max(0, i - 30)
+        price_momentum = ((price - prices[idx_30]) / prices[idx_30] * 100) if prices[idx_30] > 0 else 0
+
+        # Z-accel (18 candles ≈ 3d)
+        z_accel = oi_z - oi_zscores_4h[max(0, i - 18)] if i >= 18 else 0.0
+
+        # Volume declining (18 candles)
+        vol_declining = False
+        if i >= 18:
+            vol_declining = volumes[i] < volumes[i - 6] < volumes[i - 12]
+
+        # RV regime (date-based lookup)
+        date_str = datetime.utcfromtimestamp(ts_sec).strftime("%Y-%m-%d")
+        rv_today = rv_by_date.get(date_str)
+        rv_regime: str | None = None
+        if rv_today and rv_median_val > 0:
+            if rv_today < rv_median_val * 0.6:
+                rv_regime = "low"
+            elif rv_today > rv_median_val * 1.5:
+                rv_regime = "high"
+
+        triggered: list[tuple[str, str]] = []
+
+        # === SHORT signals (thresholds scaled for 4h) ===
+        if oi_z > 1.5 and fund_z > 0.8:
+            triggered.append(("overheat", "short"))
+
+        if fund_z > 1.5 and price_momentum > 3:
+            triggered.append(("fund_spike", "short"))
+
+        # 1-candle div squeeze (scaled ÷3)
+        if oi_chg > 1 and price_chg < -0.3:
+            triggered.append(("div_squeeze_1d", "short"))
+
+        # 6-candle (~1d) div squeeze ≈ daily 1d
+        if oi_chg_6 > 3 and price_chg_6 < -1:
+            triggered.append(("div_squeeze_3d", "short"))
+
+        # 18-candle (~3d) div squeeze ≈ daily 3d
+        if oi_chg_18 > 5 and price_chg_18 < -2:
+            triggered.append(("div_squeeze_5d", "short"))
+
+        # Div top 6-candle
+        if oi_chg_6 < -3 and price_chg_6 > 2:
+            triggered.append(("div_top_1d", "short"))
+
+        # Div top 18-candle
+        if oi_chg_18 < -5 and price_chg_18 > 3:
+            triggered.append(("div_top_3d", "short"))
+
+        if price_chg_18 > 2 and vol_declining and trend == "up":
+            triggered.append(("distribution", "short"))
+
+        if price_vs_sma > 8 and fund_z > 0.5:
+            triggered.append(("overextension", "short"))
+
+        if oi_chg_18 > 5 and abs(price_chg_18) < 1.5 and fund_z > 0.5:
+            triggered.append(("oi_buildup_stall", "short"))
+
+        # === LONG signals ===
+        if oi_z < -1.5 and fund_z < -0.8:
+            triggered.append(("capitulation", "long"))
+
+        if liq_z > 1.5 and price_chg_6 < -3 and oi_chg_6 < -2 and trend != "down":
+            triggered.append(("liq_flush", "long"))
+
+        if liq_z > 1.5 and price_chg_18 < -5 and oi_chg_18 < -5 and trend != "down":
+            triggered.append(("liq_flush_3d", "long"))
+
+        if vol_z > Z_MODERATE and oi_chg_6 < -3 and abs(price_chg_6) > 2:
+            direction = "long" if price_chg_6 < 0 else "short"
+            triggered.append(("vol_divergence", direction))
+
+        if liq_long_z > 2.5 and price_chg_6 < -4 and oi_chg_6 < -3 and trend != "down":
+            triggered.append(("liq_long_flush", "long"))
+
+        if liq_short_z > 2.0 and price_chg_6 > 2:
+            triggered.append(("liq_short_squeeze", "long"))
+
+        if i >= 18:
+            fund_18ago = fundings[i - 18]
+            fund_delta = fundings[i] - fund_18ago
+            if fund_z > 1.5 and fund_delta < -0.0005:
+                triggered.append(("fund_reversal", "short"))
+            if fund_z < -1.5 and fund_delta > 0.0005:
+                triggered.append(("fund_reversal", "long"))
+
+        if rv_today and rv_median_val > 0:
+            rv_prev_idx = max(0, i - 6)
+            rv_prev_date = datetime.utcfromtimestamp(timestamps[rv_prev_idx]).strftime("%Y-%m-%d")
+            rv_prev = rv_by_date.get(rv_prev_date)
+            if rv_prev and rv_prev > 0:
+                rv_ratio = rv_today / rv_prev
+                if rv_ratio > 1.5 and rv_prev < rv_median_val:
+                    direction = "long" if price_chg_6 > 0 else "short"
+                    triggered.append(("vol_expansion", direction))
+
+        if oi_chg_6 < -5 and vol_z > 1.5 and price_chg_6 < -3 and trend != "down":
+            triggered.append(("oi_flush_vol", "long"))
+
+        for alert_type, direction in triggered:
+            confluence, factors = _compute_confluence(
+                oi_z, fund_z, liq_z, vol_z, price_momentum, z_accel,
+                liq_long_z, liq_short_z, rv_regime,
+                direction=direction, funding_rate=fundings[i], trend=trend,
+            )
+
+            tier = _score_to_tier(confluence)
+            if not tier:
+                continue
+
+            cd_key = f"{alert_type}:{symbol}"
+            if cd_key in cooldowns:
+                if (i - cooldowns[cd_key]) < COOLDOWN_CANDLES_4H:
+                    continue
+            cooldowns[cd_key] = i
+
+            # Forward returns: +6 candles (1d), +18 (3d), +42 (7d)
+            p_6 = prices[i + 6] if i + 6 < total else None
+            p_18 = prices[i + 18] if i + 18 < total else None
+            p_42 = prices[i + 42] if i + 42 < total else None
+
+            r_6 = ((p_6 - price) / price * 100) if p_6 else None
+            r_18 = ((p_18 - price) / price * 100) if p_18 else None
+            r_42 = ((p_42 - price) / price * 100) if p_42 else None
+
+            mfe_return, mfe_price = _compute_mfe_4h(candle_data, ts_sec, direction, price)
+            mae_return = _compute_mae_4h(candle_data, ts_sec, direction, price)
+
+            snapped = (ts_sec // 14400) * 14400
+
+            alerts.append({
+                "time": snapped,
+                "type": alert_type,
+                "tier": tier,
+                "confluence": confluence,
+                "fired_at": datetime.utcfromtimestamp(ts_sec).strftime("%Y-%m-%dT%H:%M:%S"),
+                "entry_price": price,
+                "direction": direction,
+                "price_1d": p_6,
+                "price_3d": p_18,
+                "price_7d": p_42,
+                "return_1d": round(r_6, 2) if r_6 is not None else None,
+                "return_3d": round(r_18, 2) if r_18 is not None else None,
+                "return_7d": round(r_42, 2) if r_42 is not None else None,
+                "mfe_return": round(mfe_return, 2) if mfe_return is not None else None,
+                "mfe_price": round(mfe_price, 2) if mfe_price is not None else None,
+                "mae_return": round(mae_return, 2) if mae_return is not None else None,
+                "simulated": True,
+                "timeframe": "4h",
+                "factors": factors[:5],
+                "zscores": {
+                    "oi": round(oi_z, 2),
+                    "funding": round(fund_z, 2),
+                    "liq": round(liq_z, 2),
+                    "volume": round(vol_z, 2),
+                },
+            })
+
+    # Cluster nearby same-direction 4h signals
+    alerts = _cluster_alerts(alerts, max_gap_days=1)
+    return alerts
+
+
+def _apply_mtf_upgrade(alerts_4h: list[dict], alerts_1d: list[dict]) -> list[dict]:
+    """4h signal before 1d signal in same direction within 24h → tier++"""
+    for a1d in alerts_1d:
+        for a4h in alerts_4h:
+            if a4h.get("direction") != a1d.get("direction"):
+                continue
+            gap = a1d["time"] - a4h["time"]
+            if 0 < gap <= 86400:
+                a1d["tier_upgraded"] = True
+                a1d["original_tier"] = a1d["tier"]
+                if a1d["tier"] == "SETUP":
+                    a1d["tier"] = "SIGNAL"
+                elif a1d["tier"] == "SIGNAL":
+                    a1d["tier"] = "TRIGGER"
+                a1d["confluence"] += 1
+                a1d["factors"] = ["4h confirmed"] + a1d.get("factors", [])
+                break
+    return alerts_1d

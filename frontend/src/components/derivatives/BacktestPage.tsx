@@ -3,6 +3,7 @@ import { createChart, createSeriesMarkers, CandlestickSeries, LineSeries, type I
 import { useBacktest, type BacktestAlert } from '../../hooks/useBacktest'
 
 type Range = '1W' | '1M' | '3M'
+type Timeframe = '1d' | '4h' | 'mtf'
 
 const TIER_COLORS: Record<string, string> = {
   TRIGGER: '#ef4444',
@@ -65,7 +66,8 @@ function fmtPrice(v: number): string {
 
 export default function BacktestPage({ symbol }: { symbol: string | null }) {
   const [range, setRange] = useState<Range>('1M')
-  const { data, isLoading } = useBacktest(symbol, range)
+  const [timeframe, setTimeframe] = useState<Timeframe>('1d')
+  const { data, isLoading } = useBacktest(symbol, range, timeframe)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -191,15 +193,25 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
       }
     }
 
-    // Alert markers — different shapes for real vs simulated
+    // Alert markers — different shapes for real vs simulated, diamonds for 4h
     if (data.alerts.length > 0) {
-      const markers: SeriesMarker<Time>[] = data.alerts.map((a) => ({
-        time: (a.time as UTCTimestamp) as Time,
-        position: a.direction === 'long' ? 'belowBar' as const : 'aboveBar' as const,
-        color: a.simulated ? (TIER_COLORS[a.tier] || '#888') + '99' : TIER_COLORS[a.tier] || '#888',
-        shape: a.direction === 'long' ? 'arrowUp' as const : 'arrowDown' as const,
-        text: `${a.simulated ? 'sim ' : ''}${TYPE_SHORT[a.type] || a.type}`,
-      }))
+      const markers: SeriesMarker<Time>[] = data.alerts.map((a) => {
+        const is4h = a.timeframe === '4h'
+        const upgraded = a.tier_upgraded
+        const prefix = a.simulated ? (is4h ? '4h ' : 'sim ') : ''
+        const suffix = upgraded ? ' \u2B06' : ''
+        return {
+          time: (a.time as UTCTimestamp) as Time,
+          position: a.direction === 'long' ? 'belowBar' as const : 'aboveBar' as const,
+          color: a.simulated
+            ? (TIER_COLORS[a.tier] || '#888') + (is4h ? '77' : '99')
+            : TIER_COLORS[a.tier] || '#888',
+          shape: is4h
+            ? 'square' as const
+            : a.direction === 'long' ? 'arrowUp' as const : 'arrowDown' as const,
+          text: `${prefix}${TYPE_SHORT[a.type] || a.type}${suffix}`,
+        }
+      })
       createSeriesMarkers(candleSeries, markers)
     }
 
@@ -243,6 +255,22 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
             }`}
           >
             {r}
+          </button>
+        ))}
+
+        <span className="text-[#333] mx-1">|</span>
+        <span className="text-[10px] text-[#555] mr-1">TF:</span>
+        {(['1d', '4h', 'mtf'] as Timeframe[]).map((tf) => (
+          <button
+            key={tf}
+            onClick={() => setTimeframe(tf)}
+            className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors ${
+              timeframe === tf
+                ? 'bg-[#1a1a1a] text-text-primary'
+                : 'text-[#555] hover:text-text-secondary'
+            }`}
+          >
+            {tf.toUpperCase()}
           </button>
         ))}
 
@@ -339,7 +367,10 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                   >
                     <td className="px-2 py-1 text-text-secondary">{a.fired_at.slice(0, 10)}</td>
                     <td className="px-2 py-1 text-text-primary">{a.type}</td>
-                    <td className="px-2 py-1" style={{ color: TIER_COLORS[a.tier] || '#888' }}>{a.tier}</td>
+                    <td className="px-2 py-1" style={{ color: TIER_COLORS[a.tier] || '#888' }}>
+                      {a.tier}
+                      {a.tier_upgraded && <span title={`Upgraded from ${a.original_tier}`}> ⬆</span>}
+                    </td>
                     <td className="px-2 py-1 text-text-secondary">{a.confluence}/10</td>
                     <td className="px-2 py-1 text-right text-text-primary">{fmtPrice(a.entry_price)}</td>
                     <td className={`px-2 py-1 ${a.direction === 'long' ? 'text-green' : 'text-red'}`}>
@@ -358,12 +389,15 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                       {a.mfe_return != null ? `+${a.mfe_return.toFixed(1)}%` : '-'}
                     </td>
                     <td className="px-2 py-1 text-center">{hasReturn ? (won ? '\u2705' : '\u274C') : '-'}</td>
-                    <td className="px-2 py-1 text-center">
+                    <td className="px-2 py-1 text-center flex gap-0.5 justify-center">
                       <span className={`text-[8px] px-1 py-0.5 rounded ${
                         a.simulated ? 'bg-[#1a1a1a] text-[#888]' : 'bg-[#22c55e22] text-green'
                       }`}>
                         {a.simulated ? 'SIM' : 'LIVE'}
                       </span>
+                      {a.timeframe === '4h' && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-[#06b6d422] text-[#06b6d4]">4H</span>
+                      )}
                     </td>
                   </tr>
                 )

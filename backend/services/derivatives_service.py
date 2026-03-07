@@ -27,6 +27,8 @@ BINANCE_SYMBOL_MAP = {
 }
 
 POLL_INTERVAL = 300  # 5 minutes
+_FOUR_HOURS = 14400  # 4h in seconds
+_last_4h_ts: int = 0  # track last 4h snapshot boundary
 
 # ── In-memory cache ──────────────────────────────────────────────────
 
@@ -377,21 +379,19 @@ async def _fetch_and_save():
     # Get funding rates
     funding_map = await _get_funding_by_symbol()
 
-    saved = 0
+    # Build per-symbol aggregated data
+    symbol_data: dict[str, dict] = {}
     for sym in SYMBOLS:
-        # Aggregate OI: sum across exchanges
         total_oi = 0.0
         price = 0.0
         volume = 0.0
 
-        # Binance has the most data (price, volume, OI in USD)
         bn = bn_oi.get(sym, {})
         if bn:
             total_oi += bn.get("oi_usd", 0)
             price = bn.get("price", 0)
             volume = bn.get("volume_usd", 0)
 
-        # Convert coin-denominated OI to USD using Binance price
         if price > 0:
             for exchange_oi in [bb_oi, okx_oi, bg_oi]:
                 ex = exchange_oi.get(sym, {})
@@ -400,34 +400,58 @@ async def _fetch_and_save():
                 elif "oi_coins" in ex:
                     total_oi += ex["oi_coins"] * price
 
-        # Liquidations
         liq = liqs.get(sym, {})
         liq_long = liq.get("long", 0)
         liq_short = liq.get("short", 0)
         liq_delta = liq_long - liq_short
-
-        # Funding
         funding = funding_map.get(sym, 0)
 
         if total_oi > 0 or liq_long > 0 or liq_short > 0:
-            # Upsert: OI/price/funding replace, liquidations accumulate
+            symbol_data[sym] = {
+                "price": price, "oi": total_oi, "funding": funding,
+                "volume": volume, "liq_long": liq_long,
+                "liq_short": liq_short, "liq_delta": liq_delta,
+            }
+
+    # Daily upsert
+    saved = 0
+    for sym, sd in symbol_data.items():
+        await db.execute(
+            """INSERT INTO daily_derivatives
+               (symbol, date, close_price, open_interest_usd, funding_rate,
+                liquidations_long, liquidations_short, liquidations_delta, volume_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(symbol, date) DO UPDATE SET
+                 close_price = excluded.close_price,
+                 open_interest_usd = excluded.open_interest_usd,
+                 funding_rate = excluded.funding_rate,
+                 liquidations_long = daily_derivatives.liquidations_long + excluded.liquidations_long,
+                 liquidations_short = daily_derivatives.liquidations_short + excluded.liquidations_short,
+                 liquidations_delta = daily_derivatives.liquidations_delta + excluded.liquidations_delta,
+                 volume_usd = excluded.volume_usd,
+                 fetched_at = datetime('now')""",
+            (sym, today, sd["price"], sd["oi"], sd["funding"],
+             sd["liq_long"], sd["liq_short"], sd["liq_delta"], sd["volume"]),
+        )
+        saved += 1
+
+    # 4h snapshot — check if we crossed a new 4h boundary
+    global _last_4h_ts
+    now_s = int(_time.time())
+    snap_ts = (now_s // _FOUR_HOURS) * _FOUR_HOURS
+    if snap_ts != _last_4h_ts:
+        snap_ts_ms = snap_ts * 1000
+        for sym, sd in symbol_data.items():
             await db.execute(
-                """INSERT INTO daily_derivatives
-                   (symbol, date, close_price, open_interest_usd, funding_rate,
+                """INSERT OR IGNORE INTO derivatives_4h
+                   (symbol, ts, close_price, open_interest_usd, funding_rate,
                     liquidations_long, liquidations_short, liquidations_delta, volume_usd)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(symbol, date) DO UPDATE SET
-                     close_price = excluded.close_price,
-                     open_interest_usd = excluded.open_interest_usd,
-                     funding_rate = excluded.funding_rate,
-                     liquidations_long = daily_derivatives.liquidations_long + excluded.liquidations_long,
-                     liquidations_short = daily_derivatives.liquidations_short + excluded.liquidations_short,
-                     liquidations_delta = daily_derivatives.liquidations_delta + excluded.liquidations_delta,
-                     volume_usd = excluded.volume_usd,
-                     fetched_at = datetime('now')""",
-                (sym, today, price, total_oi, funding, liq_long, liq_short, liq_delta, volume),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sym, snap_ts_ms, sd["price"], sd["oi"], sd["funding"],
+                 sd["liq_long"], sd["liq_short"], sd["liq_delta"], sd["volume"]),
             )
-            saved += 1
+        _last_4h_ts = snap_ts
+        log.info(f"4h snapshot saved at {snap_ts}")
 
     await db.commit()
 
@@ -664,6 +688,101 @@ async def _backfill_rolling_zscores():
         await db.commit()
 
     log.info(f"Rolling z-scores: computed {computed} data points")
+
+
+# ── 4h Backfill (Binance only — historical multi-exchange unavailable) ──
+
+async def _backfill_4h():
+    """Backfill 4h derivatives data from Binance (~83 days per endpoint).
+    OI hist (4h), klines (4h), taker ratio (4h). Runs once on startup."""
+    db = get_db()
+
+    # Check if we already have enough 4h data
+    cnt = await db.execute_fetchone(
+        "SELECT COUNT(*) as c FROM derivatives_4h"
+    )
+    if cnt and cnt["c"] > 1000:
+        log.info("4h backfill skipped: already have data")
+        return
+
+    log.info("Starting 4h derivatives backfill...")
+    timeout = aiohttp.ClientTimeout(total=20)
+
+    async with aiohttp.ClientSession() as session:
+        for sym in SYMBOLS:
+            bn_sym = _binance_sym(sym)
+            try:
+                # 1. OI history 4h
+                async with session.get(
+                    "https://fapi.binance.com/futures/data/openInterestHist",
+                    params={"symbol": bn_sym, "period": "4h", "limit": 500},
+                    timeout=timeout,
+                ) as resp:
+                    oi_data = await resp.json() if resp.status == 200 else []
+
+                await asyncio.sleep(0.1)
+
+                # 2. Klines 4h (price + volume)
+                async with session.get(
+                    "https://fapi.binance.com/fapi/v1/klines",
+                    params={"symbol": bn_sym, "interval": "4h", "limit": 500},
+                    timeout=timeout,
+                ) as resp:
+                    klines = await resp.json() if resp.status == 200 else []
+
+                await asyncio.sleep(0.1)
+
+                # 3. Taker ratio 4h (liq proxy)
+                async with session.get(
+                    "https://fapi.binance.com/futures/data/takerlongshortRatio",
+                    params={"symbol": bn_sym, "period": "4h", "limit": 500},
+                    timeout=timeout,
+                ) as resp:
+                    taker_data = await resp.json() if resp.status == 200 else []
+
+                await asyncio.sleep(0.1)
+
+                # Build maps by timestamp (ms)
+                oi_map: dict[int, float] = {}
+                for item in oi_data:
+                    ts = int(item.get("timestamp", 0))
+                    oi_map[ts] = float(item.get("sumOpenInterestValue", 0) or 0)
+
+                taker_map: dict[int, tuple[float, float]] = {}
+                for item in taker_data:
+                    ts = int(item.get("timestamp", 0))
+                    buy = float(item.get("buyVol", 0) or 0)
+                    sell = float(item.get("sellVol", 0) or 0)
+                    taker_map[ts] = (buy, sell)
+
+                # Klines as base
+                saved = 0
+                for k in klines:
+                    ts_ms = int(k[0])
+                    close_price = float(k[4])
+                    volume = float(k[7])  # quote volume
+                    oi_usd = oi_map.get(ts_ms, 0)
+                    liq_long, liq_short = taker_map.get(ts_ms, (0, 0))
+                    liq_delta = liq_long - liq_short
+
+                    await db.execute(
+                        """INSERT OR IGNORE INTO derivatives_4h
+                           (symbol, ts, close_price, open_interest_usd, funding_rate,
+                            liquidations_long, liquidations_short, liquidations_delta, volume_usd)
+                           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                        (sym, ts_ms, close_price, oi_usd,
+                         liq_long, liq_short, liq_delta, volume),
+                    )
+                    saved += 1
+
+                await db.commit()
+                log.info(f"4h backfill {sym}: {saved} candles, OI={len(oi_data)} taker={len(taker_data)}")
+
+            except Exception as e:
+                log.warning(f"4h backfill {sym}: {e}")
+            await asyncio.sleep(0.2)
+
+    log.info("4h derivatives backfill complete")
 
 
 # ── Screener cache ───────────────────────────────────────────────────
@@ -1002,6 +1121,11 @@ async def _poll_loop():
         await _backfill()
     except Exception as e:
         log.error(f"Derivatives backfill error: {e}")
+
+    try:
+        await _backfill_4h()
+    except Exception as e:
+        log.error(f"4h backfill error: {e}")
 
     while True:
         try:
