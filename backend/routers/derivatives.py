@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from services import derivatives_service, options_service, liquidation_service, orderbook_service, momentum_service
-from services import price_service
+from services import price_service, backtest_service
 from db import get_db
 
 router = APIRouter()
@@ -82,7 +82,7 @@ async def get_backtest(
         for r in reversed(rows)
     ]
 
-    # Alerts from alert_tracking — snap fired_at to nearest 4h candle
+    # Real alerts from alert_tracking
     min_ts = candles[0]["time"] if candles else 0
     alert_rows = await db.execute_fetchall(
         """SELECT alert_type, symbol, tier, confluence, fired_at,
@@ -94,14 +94,13 @@ async def get_backtest(
            ORDER BY fired_at""",
         (symbol, min_ts),
     )
-    alerts = []
+    real_alerts = []
     for a in alert_rows:
         from datetime import datetime as _dt
         fired_dt = _dt.fromisoformat(a["fired_at"])
         fired_ts = int(fired_dt.timestamp())
-        # Snap to nearest 4h boundary (14400s)
         snapped = (fired_ts // 14400) * 14400
-        alerts.append({
+        real_alerts.append({
             "time": snapped,
             "type": a["alert_type"],
             "tier": a["tier"],
@@ -115,15 +114,53 @@ async def get_backtest(
             "return_1d": a["return_1d"],
             "return_3d": a["return_3d"],
             "return_7d": a["return_7d"],
+            "simulated": False,
         })
 
-    # Price structure (key_levels, EMAs, trend)
+    # Simulated alerts from backtest engine
+    sim_days = {"1W": 7, "1M": 30, "3M": 90}
+    simulated = await backtest_service.simulate_alerts(symbol, days=sim_days[range])
+
+    # Filter simulated to chart time range
+    if candles:
+        min_time = candles[0]["time"]
+        max_time = candles[-1]["time"]
+        simulated = [a for a in simulated if min_time <= a["time"] <= max_time]
+
+    # Merge and sort by time
+    all_alerts = real_alerts + simulated
+    all_alerts.sort(key=lambda a: a["time"])
+
+    # Stats
+    with_returns = [a for a in all_alerts if a.get("return_7d") is not None or a.get("return_3d") is not None]
+    wins = 0
+    total_return = 0.0
+    for a in with_returns:
+        ret = a.get("return_7d") or a.get("return_3d") or a.get("return_1d") or 0
+        if a.get("direction") == "short":
+            ret = -ret
+        if ret > 0:
+            wins += 1
+        total_return += ret
+
+    stats = {
+        "total_signals": len(all_alerts),
+        "real_signals": len(real_alerts),
+        "simulated_signals": len(simulated),
+        "with_returns": len(with_returns),
+        "wins": wins,
+        "win_rate": round(wins / len(with_returns) * 100, 1) if with_returns else 0,
+        "avg_return": round(total_return / len(with_returns), 2) if with_returns else 0,
+    }
+
+    # Price structure
     structure = price_service.get_price_structure(symbol)
 
     return {
         "candles": candles,
-        "alerts": alerts,
+        "alerts": all_alerts,
         "structure": structure,
+        "stats": stats,
     }
 
 

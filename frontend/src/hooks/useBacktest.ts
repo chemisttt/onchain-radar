@@ -24,6 +24,18 @@ export interface BacktestAlert {
   return_1d: number | null
   return_3d: number | null
   return_7d: number | null
+  simulated?: boolean
+  zscores?: { oi: number; funding: number; liq: number; volume: number }
+}
+
+export interface BacktestStats {
+  total_signals: number
+  real_signals: number
+  simulated_signals: number
+  with_returns: number
+  wins: number
+  win_rate: number
+  avg_return: number
 }
 
 export interface PriceStructure {
@@ -40,6 +52,7 @@ export interface BacktestData {
   candles: BacktestCandle[]
   alerts: BacktestAlert[]
   structure: PriceStructure | null
+  stats: BacktestStats
 }
 
 export function useBacktest(symbol: string | null, range: string = '1M') {

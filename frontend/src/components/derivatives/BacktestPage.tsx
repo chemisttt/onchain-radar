@@ -5,10 +5,17 @@ import { useBacktest, type BacktestAlert } from '../../hooks/useBacktest'
 type Range = '1W' | '1M' | '3M'
 
 const TIER_COLORS: Record<string, string> = {
-  S: '#ef4444',
-  A: '#f97316',
-  B: '#eab308',
-  C: '#22c55e',
+  TRIGGER: '#ef4444',
+  SIGNAL: '#f97316',
+  SETUP: '#eab308',
+}
+
+const TYPE_SHORT: Record<string, string> = {
+  overheat: 'OVH',
+  capitulation: 'CAP',
+  divergence_squeeze: 'DIV\u2193',
+  divergence_top: 'DIV\u2191',
+  liq_flush: 'FLUSH',
 }
 
 function computeEma(closes: number[], period: number): (number | null)[] {
@@ -52,17 +59,15 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
     const series = candleSeriesRef.current
     if (!chart || !series) return
 
-    // Add entry price line
     series.createPriceLine({
       price: alert.entry_price,
       color: alert.direction === 'long' ? '#22c55e' : '#ef4444',
       lineWidth: 1,
-      lineStyle: 2, // dashed
+      lineStyle: 2,
       axisLabelVisible: true,
       title: `Entry ${fmtPrice(alert.entry_price)}`,
     })
 
-    // Scroll to alert time
     chart.timeScale().setVisibleRange({
       from: ((alert.time - 86400 * 3) as UTCTimestamp) as Time,
       to: ((alert.time + 86400 * 5) as UTCTimestamp) as Time,
@@ -102,7 +107,6 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
     })
     chartRef.current = chart
 
-    // Candlestick series
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e',
       downColor: '#ef4444',
@@ -148,7 +152,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
       }
     }
 
-    // S/R levels from structure
+    // S/R levels
     if (data.structure?.key_levels) {
       for (const level of data.structure.key_levels.slice(0, 8)) {
         const label = level.type === 'support'
@@ -165,21 +169,20 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
       }
     }
 
-    // Alert markers
+    // Alert markers — different shapes for real vs simulated
     if (data.alerts.length > 0) {
       const markers: SeriesMarker<Time>[] = data.alerts.map((a) => ({
         time: (a.time as UTCTimestamp) as Time,
         position: a.direction === 'long' ? 'belowBar' as const : 'aboveBar' as const,
-        color: TIER_COLORS[a.tier] || '#888',
+        color: a.simulated ? (TIER_COLORS[a.tier] || '#888') + '99' : TIER_COLORS[a.tier] || '#888',
         shape: a.direction === 'long' ? 'arrowUp' as const : 'arrowDown' as const,
-        text: `${a.tier} ${a.type}`,
+        text: `${a.simulated ? 'sim ' : ''}${TYPE_SHORT[a.type] || a.type}`,
       }))
       createSeriesMarkers(candleSeries, markers)
     }
 
     chart.timeScale().fitContent()
 
-    // Resize observer
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect
@@ -200,9 +203,11 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
     return <div className="flex items-center justify-center h-full text-[#555] text-xs">Select a symbol</div>
   }
 
+  const stats = data?.stats
+
   return (
     <div className="h-full flex flex-col">
-      {/* Controls */}
+      {/* Controls + Stats */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-[#0a0a0a] border-b border-[#1a1a1a] flex-shrink-0">
         <span className="text-[10px] text-[#555] mr-1">Range:</span>
         {(['1W', '1M', '3M'] as Range[]).map((r) => (
@@ -218,7 +223,31 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
             {r}
           </button>
         ))}
-        {data?.structure && (
+
+        {stats && stats.total_signals > 0 && (
+          <div className="ml-auto flex items-center gap-3 text-[10px] font-mono">
+            <span className="text-[#555]">
+              Signals: <span className="text-text-primary">{stats.total_signals}</span>
+              {stats.simulated_signals > 0 && (
+                <span className="text-[#555]"> ({stats.real_signals} real + {stats.simulated_signals} sim)</span>
+              )}
+            </span>
+            {stats.with_returns > 0 && (
+              <>
+                <span className="text-[#555]">Win rate:</span>
+                <span className={stats.win_rate >= 50 ? 'text-green' : 'text-red'}>
+                  {stats.win_rate}%
+                </span>
+                <span className="text-[#555]">Avg:</span>
+                <span className={stats.avg_return >= 0 ? 'text-green' : 'text-red'}>
+                  {stats.avg_return > 0 ? '+' : ''}{stats.avg_return}%
+                </span>
+              </>
+            )}
+          </div>
+        )}
+
+        {data?.structure && !stats?.total_signals && (
           <span className={`ml-auto text-[10px] font-mono ${
             data.structure.trend === 'up' ? 'text-green' : data.structure.trend === 'down' ? 'text-red' : 'text-[#555]'
           }`}>
@@ -243,28 +272,33 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                 <th className="text-left px-2 py-1">Date</th>
                 <th className="text-left px-2 py-1">Type</th>
                 <th className="text-left px-2 py-1">Tier</th>
+                <th className="text-left px-2 py-1">Conf</th>
                 <th className="text-right px-2 py-1">Entry</th>
                 <th className="text-left px-2 py-1">Dir</th>
                 <th className="text-right px-2 py-1">1D</th>
                 <th className="text-right px-2 py-1">3D</th>
                 <th className="text-right px-2 py-1">7D</th>
                 <th className="text-center px-2 py-1">Result</th>
+                <th className="text-center px-2 py-1">Src</th>
               </tr>
             </thead>
             <tbody>
               {data.alerts.map((a, i) => {
-                const won = a.direction === 'long'
-                  ? (a.return_7d ?? a.return_3d ?? a.return_1d ?? 0) > 0
-                  : (a.return_7d ?? a.return_3d ?? a.return_1d ?? 0) < 0
+                const bestReturn = a.direction === 'long'
+                  ? (a.return_7d ?? a.return_3d ?? a.return_1d ?? 0)
+                  : -(a.return_7d ?? a.return_3d ?? a.return_1d ?? 0)
+                const hasReturn = a.return_7d != null || a.return_3d != null || a.return_1d != null
+                const won = hasReturn && bestReturn > 0
                 return (
                   <tr
                     key={i}
                     onClick={() => scrollToAlert(a)}
-                    className="hover:bg-[#111] cursor-pointer border-t border-[#111]"
+                    className={`hover:bg-[#111] cursor-pointer border-t border-[#111] ${a.simulated ? 'opacity-80' : ''}`}
                   >
-                    <td className="px-2 py-1 text-text-secondary">{a.fired_at.slice(0, 16)}</td>
+                    <td className="px-2 py-1 text-text-secondary">{a.fired_at.slice(0, 10)}</td>
                     <td className="px-2 py-1 text-text-primary">{a.type}</td>
                     <td className="px-2 py-1" style={{ color: TIER_COLORS[a.tier] || '#888' }}>{a.tier}</td>
+                    <td className="px-2 py-1 text-text-secondary">{a.confluence}/10</td>
                     <td className="px-2 py-1 text-right text-text-primary">{fmtPrice(a.entry_price)}</td>
                     <td className={`px-2 py-1 ${a.direction === 'long' ? 'text-green' : 'text-red'}`}>
                       {a.direction || '-'}
@@ -278,7 +312,14 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                     <td className={`px-2 py-1 text-right ${(a.return_7d ?? 0) >= 0 ? 'text-green' : 'text-red'}`}>
                       {fmtReturn(a.return_7d)}
                     </td>
-                    <td className="px-2 py-1 text-center">{won ? '\u2705' : '\u274C'}</td>
+                    <td className="px-2 py-1 text-center">{hasReturn ? (won ? '\u2705' : '\u274C') : '-'}</td>
+                    <td className="px-2 py-1 text-center">
+                      <span className={`text-[8px] px-1 py-0.5 rounded ${
+                        a.simulated ? 'bg-[#1a1a1a] text-[#888]' : 'bg-[#22c55e22] text-green'
+                      }`}>
+                        {a.simulated ? 'SIM' : 'LIVE'}
+                      </span>
+                    </td>
                   </tr>
                 )
               })}
