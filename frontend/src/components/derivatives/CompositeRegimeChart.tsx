@@ -1,5 +1,6 @@
 import {
   ResponsiveContainer,
+  ComposedChart,
   LineChart,
   Line,
   BarChart,
@@ -16,6 +17,7 @@ interface CompositeRegimeChartProps {
     date: string
     price: number
     composite: number
+    composite_sma5?: number
   }>
   symbol: string
   currentComposite: number
@@ -105,10 +107,10 @@ export default function CompositeRegimeChart({
         </ResponsiveContainer>
       </div>
 
-      {/* Composite bars — bottom */}
+      {/* Composite bars + SMA-5 — bottom */}
       <div style={{ height: 90 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+          <ComposedChart data={data} margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
             <XAxis
               dataKey="date"
               tick={{ fontSize: 8, fill: '#555' }}
@@ -140,7 +142,7 @@ export default function CompositeRegimeChart({
                 return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
               }}
               separator=": "
-              formatter={(v: any) => [Number(v).toFixed(2), 'Composite Z']}
+              formatter={(v: any, name: any) => [Number(v).toFixed(2), name === 'composite_sma5' ? 'SMA-5' : 'Composite Z']}
               cursor={{ stroke: '#333', strokeWidth: 1 }}
             />
             <ReferenceLine y={0} stroke="#333" />
@@ -151,7 +153,17 @@ export default function CompositeRegimeChart({
                 <Cell key={i} fill={regimeColor(entry.composite)} fillOpacity={0.85} />
               ))}
             </Bar>
-          </BarChart>
+            {data.some((d) => d.composite_sma5 != null) && (
+              <Line
+                type="monotone"
+                dataKey="composite_sma5"
+                stroke="#eab308"
+                strokeWidth={1}
+                dot={false}
+                connectNulls
+              />
+            )}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     </div>

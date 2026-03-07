@@ -334,7 +334,18 @@ async def _backfill_rv_all():
     log.info("RV backfill complete for all symbols")
 
 
-# ── Skew Z-Score computation ─────────────────────────────────────────
+# ── Z-Score helpers ──────────────────────────────────────────────────
+
+def _zscore_from_vals(vals: list[float], current: float) -> float:
+    """Compute z-score from a list of historical values."""
+    if len(vals) < 7:
+        return 0.0
+    mean = sum(vals) / len(vals)
+    std = (sum((x - mean) ** 2 for x in vals) / len(vals)) ** 0.5
+    if std == 0:
+        return 0.0
+    return round((current - mean) / std, 4)
+
 
 async def _update_skew_zscore(sym: str, current_skew: float):
     """Compute skew z-score from accumulated skew history."""
@@ -346,14 +357,22 @@ async def _update_skew_zscore(sym: str, current_skew: float):
         (sym,),
     )
     vals = [r["skew_25d"] for r in rows]
-    if len(vals) < 7:
-        return 0.0
+    return _zscore_from_vals(vals, current_skew)
 
-    mean = sum(vals) / len(vals)
-    std = (sum((x - mean) ** 2 for x in vals) / len(vals)) ** 0.5
-    if std == 0:
-        return 0.0
-    return round((current_skew - mean) / std, 4)
+
+async def _update_vrp(sym: str, iv: float, rv: float) -> tuple[float, float]:
+    """Compute VRP and VRP z-score."""
+    vrp = round(iv - rv, 2)
+    db = get_db()
+    rows = await db.execute_fetchall(
+        """SELECT iv_30d - rv_30d as vrp FROM daily_volatility
+           WHERE symbol = ? AND iv_30d IS NOT NULL AND rv_30d IS NOT NULL
+           ORDER BY date ASC""",
+        (sym,),
+    )
+    vals = [r["vrp"] for r in rows if r["vrp"] is not None]
+    vrp_z = _zscore_from_vals(vals, vrp)
+    return vrp, vrp_z
 
 
 # ── Poll loop ────────────────────────────────────────────────────────
@@ -397,15 +416,29 @@ async def _poll_loop():
                     )
                     price = price_row[0]["close_price"] if price_row else None
 
+                    # Compute VRP if both IV and RV available
+                    vrp_val, vrp_z = None, None
+                    if iv_today is not None:
+                        # Get today's RV from daily_rv
+                        rv_row = await db.execute_fetchall(
+                            "SELECT rv_30d FROM daily_rv WHERE symbol=? ORDER BY date DESC LIMIT 1",
+                            (sym,),
+                        )
+                        rv_for_vrp = rv_row[0]["rv_30d"] if rv_row else None
+                        if rv_for_vrp is not None:
+                            vrp_val, vrp_z = await _update_vrp(sym, iv_today, rv_for_vrp)
+
                     await db.execute(
-                        """INSERT INTO daily_volatility (symbol, date, iv_30d, skew_25d, skew_25d_zscore, close_price)
-                           VALUES (?, ?, ?, ?, ?, ?)
+                        """INSERT INTO daily_volatility (symbol, date, iv_30d, skew_25d, skew_25d_zscore, vrp, vrp_zscore, close_price)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(symbol, date) DO UPDATE SET
                              iv_30d=COALESCE(excluded.iv_30d, daily_volatility.iv_30d),
                              skew_25d=COALESCE(excluded.skew_25d, daily_volatility.skew_25d),
                              skew_25d_zscore=COALESCE(excluded.skew_25d_zscore, daily_volatility.skew_25d_zscore),
+                             vrp=COALESCE(excluded.vrp, daily_volatility.vrp),
+                             vrp_zscore=COALESCE(excluded.vrp_zscore, daily_volatility.vrp_zscore),
                              close_price=COALESCE(excluded.close_price, daily_volatility.close_price)""",
-                        (sym, today, iv_today, skew, skew_z, price),
+                        (sym, today, iv_today, skew, skew_z, vrp_val, vrp_z, price),
                     )
                     await asyncio.sleep(1)
 
@@ -442,11 +475,14 @@ async def get_momentum_data(symbol: str, days: int = 365) -> dict:
 
     iv_rv: list[dict] = []
     skew_zscore: list[dict] = []
+    vrp_series: list[dict] = []
+    vol_cone: dict = {}
 
     if has_options:
-        # IV + RV for BTC/ETH
+        # IV + RV + VRP for BTC/ETH
         vol_rows = await db.execute_fetchall(
-            """SELECT v.date, v.iv_30d, v.rv_30d, v.skew_25d, v.skew_25d_zscore, v.close_price as price
+            """SELECT v.date, v.iv_30d, v.rv_30d, v.skew_25d, v.skew_25d_zscore,
+                      v.vrp, v.vrp_zscore, v.close_price as price
                FROM daily_volatility v
                WHERE v.symbol = ? AND v.date >= date('now', ? || ' days')
                ORDER BY v.date ASC""",
@@ -458,6 +494,7 @@ async def get_momentum_data(symbol: str, days: int = 365) -> dict:
                 "price": r["price"] or 0,
                 "iv_30d": r["iv_30d"],
                 "rv_30d": r["rv_30d"],
+                "vrp": r["vrp"],
             }
             for r in vol_rows
             if r["iv_30d"] is not None
@@ -472,6 +509,18 @@ async def get_momentum_data(symbol: str, days: int = 365) -> dict:
             for r in vol_rows
             if r["skew_25d"] is not None
         ]
+        vrp_series = [
+            {
+                "date": r["date"],
+                "vrp": r["vrp"],
+                "vrp_zscore": r["vrp_zscore"],
+            }
+            for r in vol_rows
+            if r["vrp"] is not None
+        ]
+
+    # Volatility Cone: RV percentile bands at multiple lookback periods
+    vol_cone = await _compute_vol_cone(sym)
 
     return {
         "symbol": sym,
@@ -479,7 +528,59 @@ async def get_momentum_data(symbol: str, days: int = 365) -> dict:
         "price_rv": price_rv,
         "iv_rv": iv_rv,
         "skew_zscore": skew_zscore,
+        "vrp_series": vrp_series,
+        "vol_cone": vol_cone,
     }
+
+
+async def _compute_vol_cone(symbol: str) -> dict:
+    """Compute volatility cone: RV at multiple lookback periods with percentile bands."""
+    db = get_db()
+    rows = await db.execute_fetchall(
+        """SELECT date, close_price FROM daily_derivatives
+           WHERE symbol = ? AND close_price > 0
+           ORDER BY date ASC""",
+        (symbol,),
+    )
+    if len(rows) < 200:
+        return {}
+
+    prices = [r["close_price"] for r in rows]
+    log_returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices)) if prices[i - 1] > 0]
+
+    if len(log_returns) < 180:
+        return {}
+
+    result = {}
+    for period in [7, 14, 30, 60, 90, 180]:
+        if len(log_returns) < period + 30:
+            continue
+        # Compute rolling RV for each window position
+        rvs = []
+        for i in range(period, len(log_returns)):
+            window = log_returns[i - period:i]
+            mean = sum(window) / len(window)
+            var = sum((x - mean) ** 2 for x in window) / len(window)
+            rv = math.sqrt(var) * math.sqrt(365) * 100
+            rvs.append(rv)
+
+        if len(rvs) < 20:
+            continue
+
+        sorted_rvs = sorted(rvs)
+        n = len(sorted_rvs)
+        current = rvs[-1]
+
+        result[str(period)] = {
+            "p10": round(sorted_rvs[int(n * 0.1)], 1),
+            "p25": round(sorted_rvs[int(n * 0.25)], 1),
+            "p50": round(sorted_rvs[int(n * 0.5)], 1),
+            "p75": round(sorted_rvs[int(n * 0.75)], 1),
+            "p90": round(sorted_rvs[int(n * 0.9)], 1),
+            "current": round(current, 1),
+        }
+
+    return result
 
 
 # ── Service lifecycle ────────────────────────────────────────────────

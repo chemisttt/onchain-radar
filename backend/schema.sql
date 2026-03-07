@@ -112,7 +112,24 @@ CREATE TABLE IF NOT EXISTS daily_volatility (
     rv_30d REAL,
     skew_25d REAL,
     skew_25d_zscore REAL,
+    vrp REAL,
+    vrp_zscore REAL,
     close_price REAL,
+    PRIMARY KEY (symbol, date)
+);
+
+-- Momentum indicator (all symbols)
+CREATE TABLE IF NOT EXISTS daily_momentum (
+    symbol TEXT NOT NULL,
+    date TEXT NOT NULL,
+    momentum_value REAL,
+    cs_decile INTEGER,
+    ts_decile INTEGER,
+    rel_decile INTEGER,
+    directional_intensity REAL,
+    vol_regime REAL,
+    relative_volume REAL,
+    proximity_52w_high REAL,
     PRIMARY KEY (symbol, date)
 );
 

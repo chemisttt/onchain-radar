@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from db import init_db, close_db
 from routers import feed, tokens, security, watchlist, funding, claude, settings, analyze, derivatives
 from services import feed_engine, funding_service, protocol_tracker, derivatives_service
-from services import options_service, liquidation_service, orderbook_service
+from services import options_service, liquidation_service, orderbook_service, momentum_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     options_service.start()
     liquidation_service.start()
     orderbook_service.start()
+    momentum_service.start()
     yield
     feed_engine.stop()
     funding_service.stop()
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
     options_service.stop()
     liquidation_service.stop()
     orderbook_service.stop()
+    momentum_service.stop()
     await close_db()
 
 

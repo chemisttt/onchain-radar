@@ -92,7 +92,7 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
 
   const chartData = useMemo(() => {
     if (!data?.history?.length) return []
-    return data.history.map((h) => ({
+    const raw = data.history.map((h) => ({
       date: h.date,
       price: h.price,
       oi: h.oi,
@@ -103,7 +103,20 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
       funding_zscore: h.funding_zscore,
       liq_zscore: h.liq_zscore,
       composite: (h.oi_zscore + h.funding_zscore + h.liq_zscore) / 3,
+      composite_sma5: 0 as number,
     }))
+    // SMA-5 smoothing
+    for (let i = 0; i < raw.length; i++) {
+      if (i < 4) {
+        raw[i].composite_sma5 = raw[i].composite
+      } else {
+        raw[i].composite_sma5 = (
+          raw[i].composite + raw[i - 1].composite + raw[i - 2].composite +
+          raw[i - 3].composite + raw[i - 4].composite
+        ) / 5
+      }
+    }
+    return raw
   }, [data])
 
   if (!symbol) {

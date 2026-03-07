@@ -5,13 +5,17 @@ import {
   BarChart,
   Line,
   Bar,
+  Area,
   Cell,
   XAxis,
   YAxis,
   Tooltip,
   ReferenceLine,
+  ScatterChart,
+  Scatter,
+  ZAxis,
 } from 'recharts'
-import { useMomentum } from '../../hooks/useMomentum'
+import { useMomentum, type VolConeEntry } from '../../hooks/useMomentum'
 
 function fmtDateLabel(v: any): string {
   const d = new Date(v)
@@ -25,6 +29,19 @@ function regimeColor(z: number): string {
   if (z <= 1) return '#eab308'
   if (z <= 2) return '#f97316'
   return '#ef4444'
+}
+
+function vrpColor(vrp: number): string {
+  return vrp >= 0 ? '#22c55e' : '#ef4444'
+}
+
+const TOOLTIP_STYLE = {
+  background: '#222',
+  border: '1px solid #444',
+  borderRadius: 4,
+  fontSize: 11,
+  padding: '6px 10px',
+  color: '#e2e8f0',
 }
 
 interface MomentumTabProps {
@@ -57,6 +74,7 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
   const latestIvRv = data.iv_rv.length > 0 ? data.iv_rv[data.iv_rv.length - 1] : null
   const latestSkew = data.skew_zscore.length > 0 ? data.skew_zscore[data.skew_zscore.length - 1] : null
   const latestRv = data.price_rv.length > 0 ? data.price_rv[data.price_rv.length - 1] : null
+  const latestVrp = data.vrp_series?.length > 0 ? data.vrp_series[data.vrp_series.length - 1] : null
 
   return (
     <div className="h-full overflow-y-auto p-2 space-y-2">
@@ -129,20 +147,14 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
                   axisLine={false}
                 />
                 <Tooltip
-                  contentStyle={{
-                    background: '#222',
-                    border: '1px solid #444',
-                    borderRadius: 4,
-                    fontSize: 11,
-                    padding: '6px 10px',
-                    color: '#e2e8f0',
-                  }}
+                  contentStyle={TOOLTIP_STYLE}
                   labelStyle={{ color: '#999', fontSize: 10 }}
                   itemStyle={{ color: '#e2e8f0' }}
                   labelFormatter={fmtDateLabel}
                   separator=": "
                   formatter={(v: any, name: any) => {
                     if (name === 'price') return [`$${Number(v).toLocaleString()}`, 'Price']
+                    if (name === 'vrp') return [`${Number(v)?.toFixed(1)}%`, 'VRP']
                     return [`${Number(v)?.toFixed(1)}%`, name === 'iv_30d' ? 'IV 30d' : 'RV 30d']
                   }}
                   cursor={{ stroke: '#333', strokeWidth: 1 }}
@@ -205,14 +217,7 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
                   axisLine={false}
                 />
                 <Tooltip
-                  contentStyle={{
-                    background: '#222',
-                    border: '1px solid #444',
-                    borderRadius: 4,
-                    fontSize: 11,
-                    padding: '6px 10px',
-                    color: '#e2e8f0',
-                  }}
+                  contentStyle={TOOLTIP_STYLE}
                   labelStyle={{ color: '#999', fontSize: 10 }}
                   itemStyle={{ color: '#e2e8f0' }}
                   labelFormatter={fmtDateLabel}
@@ -245,6 +250,71 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* VRP (Variance Risk Premium) — BTC/ETH only */}
+      {hasOptions && data.vrp_series && data.vrp_series.length > 0 && (
+        <div className="bg-[#0c0c0c] border border-[#1a1a1a] rounded flex flex-col">
+          <div className="flex items-center gap-4 px-3 pt-2.5 pb-1">
+            <span className="text-[11px] text-text-primary font-medium">VRP (IV - RV)</span>
+            {latestVrp && (
+              <>
+                <span className={`text-[10px] font-mono ${latestVrp.vrp != null && latestVrp.vrp >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
+                  VRP: {latestVrp.vrp?.toFixed(1)}%
+                </span>
+                <span className="text-[10px] font-mono text-text-secondary">
+                  Z: <span style={{ color: regimeColor(latestVrp.vrp_zscore ?? 0) }}>
+                    {latestVrp.vrp_zscore?.toFixed(2)}
+                  </span>
+                </span>
+                {latestVrp.vrp_zscore != null && (
+                  <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                    latestVrp.vrp_zscore > 2 ? 'bg-[#22c55e]/15 text-[#22c55e]' :
+                    latestVrp.vrp_zscore < -2 ? 'bg-[#ef4444]/15 text-[#ef4444]' :
+                    'bg-[#333] text-[#888]'
+                  }`}>
+                    {latestVrp.vrp_zscore > 2 ? 'Rich Vol' :
+                     latestVrp.vrp_zscore < -2 ? 'Cheap Vol' : 'Normal'}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+          <div style={{ height: 120 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data.vrp_series} margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 8, fill: '#555' }}
+                  interval="preserveStartEnd"
+                  tickLine={false}
+                  axisLine={{ stroke: '#222' }}
+                  tickFormatter={(v: string) => v.slice(5)}
+                />
+                <YAxis
+                  tick={{ fontSize: 8, fill: '#555' }}
+                  tickFormatter={(v: number) => `${v.toFixed(0)}%`}
+                  width={42}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <Tooltip
+                  contentStyle={TOOLTIP_STYLE}
+                  labelFormatter={fmtDateLabel}
+                  separator=": "
+                  formatter={(v: any) => [`${Number(v)?.toFixed(1)}%`, 'VRP']}
+                  cursor={{ stroke: '#333', strokeWidth: 1 }}
+                />
+                <ReferenceLine y={0} stroke="#333" />
+                <Bar dataKey="vrp" maxBarSize={3}>
+                  {data.vrp_series.map((entry, i) => (
+                    <Cell key={i} fill={vrpColor(entry.vrp ?? 0)} fillOpacity={0.8} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* 25d Skew Z-Score (BTC/ETH only) */}
       {hasOptions && data.skew_zscore.length > 0 ? (
@@ -281,14 +351,7 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
                   axisLine={false}
                 />
                 <Tooltip
-                  contentStyle={{
-                    background: '#222',
-                    border: '1px solid #444',
-                    borderRadius: 4,
-                    fontSize: 11,
-                    padding: '6px 10px',
-                    color: '#e2e8f0',
-                  }}
+                  contentStyle={TOOLTIP_STYLE}
                   labelStyle={{ color: '#999', fontSize: 10 }}
                   itemStyle={{ color: '#e2e8f0' }}
                   labelFormatter={fmtDateLabel}
@@ -358,6 +421,108 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
           </span>
         </div>
       ) : null}
+
+      {/* Volatility Cone */}
+      {data.vol_cone && Object.keys(data.vol_cone).length > 0 && (
+        <VolatilityCone cone={data.vol_cone} symbol={sym} />
+      )}
+    </div>
+  )
+}
+
+/* ── Volatility Cone Component ────────────────────────── */
+
+function VolatilityCone({
+  cone,
+  symbol,
+}: {
+  cone: Record<string, VolConeEntry>
+  symbol: string
+}) {
+  const periods = ['7', '14', '30', '60', '90', '180']
+  const labels = ['7d', '14d', '30d', '60d', '90d', '180d']
+
+  const chartData = periods
+    .filter((p) => cone[p])
+    .map((p, i) => ({
+      period: labels[i],
+      p10: cone[p].p10,
+      p25: cone[p].p25,
+      p50: cone[p].p50,
+      p75: cone[p].p75,
+      p90: cone[p].p90,
+      current: cone[p].current,
+      // For area bands
+      band_10_25: cone[p].p25 - cone[p].p10,
+      band_25_50: cone[p].p50 - cone[p].p25,
+      band_50_75: cone[p].p75 - cone[p].p50,
+      band_75_90: cone[p].p90 - cone[p].p75,
+    }))
+
+  const scatterData = chartData.map((d, i) => ({
+    x: i,
+    y: d.current,
+    period: d.period,
+  }))
+
+  return (
+    <div className="bg-[#0c0c0c] border border-[#1a1a1a] rounded flex flex-col">
+      <div className="flex items-center gap-4 px-3 pt-2.5 pb-1">
+        <span className="text-[11px] text-text-primary font-medium">
+          Volatility Cone — {symbol}
+        </span>
+        <div className="flex items-center gap-2 text-[9px] font-mono">
+          <span className="text-[#555]">Bands:</span>
+          <span style={{ color: '#22c55e33' }}>p10-25</span>
+          <span style={{ color: '#22c55e66' }}>p25-50</span>
+          <span style={{ color: '#ef444466' }}>p50-75</span>
+          <span style={{ color: '#ef444433' }}>p75-90</span>
+          <span className="text-[#eab308]">Current</span>
+        </div>
+      </div>
+      <div style={{ height: 200 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <XAxis
+              dataKey="period"
+              tick={{ fontSize: 9, fill: '#888' }}
+              tickLine={false}
+              axisLine={{ stroke: '#222' }}
+            />
+            <YAxis
+              tick={{ fontSize: 8, fill: '#555' }}
+              tickFormatter={(v: number) => `${v.toFixed(0)}%`}
+              width={42}
+              tickLine={false}
+              axisLine={false}
+            />
+            <Tooltip
+              contentStyle={TOOLTIP_STYLE}
+              formatter={(v: any, name: any) => {
+                const n = Number(v)
+                if (name === 'current') return [`${n.toFixed(1)}%`, 'Current RV']
+                return [`${n.toFixed(1)}%`, name]
+              }}
+            />
+            {/* Stacked areas for percentile bands */}
+            <Area type="monotone" dataKey="p10" stackId="cone" fill="transparent" stroke="transparent" />
+            <Area type="monotone" dataKey="band_10_25" stackId="cone" fill="#22c55e" fillOpacity={0.08} stroke="transparent" />
+            <Area type="monotone" dataKey="band_25_50" stackId="cone" fill="#22c55e" fillOpacity={0.15} stroke="transparent" />
+            <Area type="monotone" dataKey="band_50_75" stackId="cone" fill="#ef4444" fillOpacity={0.15} stroke="transparent" />
+            <Area type="monotone" dataKey="band_75_90" stackId="cone" fill="#ef4444" fillOpacity={0.08} stroke="transparent" />
+            {/* Median line */}
+            <Line type="monotone" dataKey="p50" stroke="#555" strokeWidth={1} strokeDasharray="4 4" dot={false} />
+            {/* Current RV dots */}
+            <Line
+              type="monotone"
+              dataKey="current"
+              stroke="#eab308"
+              strokeWidth={2}
+              dot={{ fill: '#eab308', r: 4, stroke: '#0c0c0c', strokeWidth: 2 }}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   )
 }

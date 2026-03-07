@@ -242,6 +242,68 @@ export default function GlobalDashboard() {
         </ResponsiveContainer>
       </DashCard>
 
+      {/* ── Alt OI Dominance ───────────────────────────── */}
+      {data.alt_oi_dominance && data.alt_oi_dominance.length > 0 && (
+        <DashCard
+          title="Altcoin OI Dominance"
+          className="h-[200px]"
+          footer={
+            <>
+              <span className="text-text-secondary">Current:</span>
+              <span className={
+                (data.alt_oi_dominance[data.alt_oi_dominance.length - 1]?.value ?? 0) > 65
+                  ? 'text-red'
+                  : (data.alt_oi_dominance[data.alt_oi_dominance.length - 1]?.value ?? 0) < 40
+                    ? 'text-green'
+                    : 'text-text-primary'
+              }>
+                {data.alt_oi_dominance[data.alt_oi_dominance.length - 1]?.value.toFixed(1)}%
+              </span>
+              <span className="text-[9px] text-[#555]">
+                {(data.alt_oi_dominance[data.alt_oi_dominance.length - 1]?.value ?? 0) > 65
+                  ? 'Risk-On (Alts Hot)'
+                  : (data.alt_oi_dominance[data.alt_oi_dominance.length - 1]?.value ?? 0) < 40
+                    ? 'Risk-Off (Alts Washed)'
+                    : 'Neutral'}
+              </span>
+            </>
+          }
+        >
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data.alt_oi_dominance}>
+              <defs>
+                <linearGradient id="altDomGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#a78bfa" stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid {...GRID} />
+              <XAxis dataKey="date" tickFormatter={dateFormatter} {...AXIS} minTickGap={50} />
+              <YAxis {...AXIS} tickFormatter={(v: number) => `${v.toFixed(0)}%`} domain={['auto', 'auto']} />
+              <ReferenceLine y={65} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.4} label={{ value: '65%', position: 'right', fontSize: 8, fill: '#ef4444' }} />
+              <ReferenceLine y={40} stroke="#22c55e" strokeDasharray="3 3" strokeOpacity={0.4} label={{ value: '40%', position: 'right', fontSize: 8, fill: '#22c55e' }} />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke="#a78bfa"
+                fill="url(#altDomGrad)"
+                strokeWidth={1.5}
+                dot={false}
+              />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#222', border: '1px solid #444', fontSize: 11, color: '#e2e8f0' }} itemStyle={{ color: '#e2e8f0' }}
+                formatter={(v: any) => [`${Number(v).toFixed(1)}%`, 'Alt OI Dom']}
+                separator=": "
+                labelFormatter={(v: any) => {
+                  const d = new Date(v)
+                  return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                }}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </DashCard>
+      )}
+
       {/* ── Row: Global Liq | Global OI | Global OI Z-Score ─ */}
       <div className="grid grid-cols-3 gap-2" style={{ height: 230 }}>
         {/* Global Liquidations */}

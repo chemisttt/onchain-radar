@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from services import derivatives_service, options_service, liquidation_service, orderbook_service
+from services import derivatives_service, options_service, liquidation_service, orderbook_service, momentum_service
 
 router = APIRouter()
 
@@ -28,6 +28,15 @@ async def get_momentum(
 ):
     """Momentum data: Price/IV/RV + 25d Skew Z-Score."""
     return await options_service.get_momentum_data(symbol=symbol, days=days)
+
+
+@router.get("/derivatives/momentum-page/{symbol}")
+async def get_momentum_page(
+    symbol: str,
+    days: int = Query(365, ge=1, le=730),
+):
+    """Full momentum page: metrics, DI/VR series, scatter plots, price distribution."""
+    return await momentum_service.get_momentum_page(symbol=symbol, days=days)
 
 
 @router.get("/derivatives/liquidation-map/{symbol}")

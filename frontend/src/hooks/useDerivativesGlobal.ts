@@ -34,11 +34,17 @@ export interface HeatmapEntry {
   data: { date: string; rate: number }[]
 }
 
+export interface AltOIDomPoint {
+  date: string
+  value: number
+}
+
 export interface DerivativesGlobal {
   global_oi: GlobalOIPoint[]
   global_oi_zscore: GlobalZPoint[]
   global_liquidations: GlobalLiqPoint[]
   risk_appetite: RiskAppetitePoint[]
+  alt_oi_dominance: AltOIDomPoint[]
   performance: Record<string, PerformancePoint[]>
   funding_heatmap: HeatmapEntry[]
   heatmap_dates: string[]

@@ -21,12 +21,29 @@ export interface SkewZPoint {
   skew_zscore: number | null
 }
 
+export interface VrpPoint {
+  date: string
+  vrp: number | null
+  vrp_zscore: number | null
+}
+
+export interface VolConeEntry {
+  p10: number
+  p25: number
+  p50: number
+  p75: number
+  p90: number
+  current: number
+}
+
 export interface MomentumData {
   symbol: string
   has_options_data: boolean
   price_rv: PriceRvPoint[]
-  iv_rv: IvRvPoint[]
+  iv_rv: (IvRvPoint & { vrp?: number | null })[]
   skew_zscore: SkewZPoint[]
+  vrp_series: VrpPoint[]
+  vol_cone: Record<string, VolConeEntry>
 }
 
 export function useMomentum(symbol: string | null, days = 365) {

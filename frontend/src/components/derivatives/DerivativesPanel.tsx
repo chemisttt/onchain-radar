@@ -5,6 +5,7 @@ import ScreenerTable from './ScreenerTable'
 import SymbolDetail from './SymbolDetail'
 import GlobalDashboard from './GlobalDashboard'
 import MomentumTab from './MomentumTab'
+import MomentumPage from './MomentumPage'
 
 function fmtUsd(v: number): string {
   if (Math.abs(v) >= 1e9) return `$${(v / 1e9).toFixed(2)}B`
@@ -19,7 +20,7 @@ function fmtPrice(v: number): string {
   return `$${v.toPrecision(4)}`
 }
 
-type TabKey = 'analysis' | 'momentum' | 'global'
+type TabKey = 'analysis' | 'momentum' | 'momentum-page' | 'global'
 
 export default function DerivativesPanel() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>('BTCUSDT')
@@ -58,7 +59,7 @@ export default function DerivativesPanel() {
       <div className="flex items-center gap-4 px-4 py-2 bg-[#0a0a0a] border-b border-[#1a1a1a] flex-shrink-0">
         {/* Tabs */}
         <div className="flex items-center gap-1 mr-4">
-          {(['analysis', 'momentum', 'global'] as const).map((t) => (
+          {(['analysis', 'momentum', 'momentum-page', 'global'] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -68,13 +69,13 @@ export default function DerivativesPanel() {
                   : 'text-[#555] hover:text-text-secondary'
               }`}
             >
-              {t === 'analysis' ? 'Analysis' : t === 'momentum' ? 'Momentum' : 'Global'}
+              {t === 'analysis' ? 'Analysis' : t === 'momentum' ? 'IV/RV' : t === 'momentum-page' ? 'Momentum' : 'Global'}
             </button>
           ))}
         </div>
 
-        {/* Symbol stats (only in analysis/momentum tab) */}
-        {(tab === 'analysis' || tab === 'momentum') && selected && (
+        {/* Symbol stats (only in analysis/momentum/momentum-page tab) */}
+        {(tab === 'analysis' || tab === 'momentum' || tab === 'momentum-page') && selected && (
           <>
             <span className="text-sm font-mono font-semibold text-text-primary">
               {selected.symbol.replace('USDT', '')}
@@ -121,6 +122,8 @@ export default function DerivativesPanel() {
           <SymbolDetail symbol={selectedSymbol} />
         ) : tab === 'momentum' ? (
           <MomentumTab symbol={selectedSymbol} />
+        ) : tab === 'momentum-page' ? (
+          <MomentumPage symbol={selectedSymbol} />
         ) : (
           <GlobalDashboard />
         )}

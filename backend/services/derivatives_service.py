@@ -796,18 +796,22 @@ async def get_global_data(days: int = 365) -> dict:
     global_oi = []
     global_liq = []
     total_oi_series = []
+    alt_oi_dominance = []
     for r in rows:
         d = r["date"]
         total = r["total_oi"] or 0
+        btc_oi = r["btc_oi"] or 0
         global_oi.append({
             "date": d,
-            "btc": r["btc_oi"] or 0,
+            "btc": btc_oi,
             "eth": r["eth_oi"] or 0,
             "others": r["others_oi"] or 0,
             "total": total,
         })
         global_liq.append({"date": d, "value": r["total_liq_delta"] or 0})
         total_oi_series.append(total)
+        alt_dom = round((total - btc_oi) / total * 100, 1) if total > 0 else 0
+        alt_oi_dominance.append({"date": d, "value": alt_dom})
 
     # 2. Global OI Z-Score (rolling on total_oi_series)
     global_oi_zscore = []
@@ -893,6 +897,7 @@ async def get_global_data(days: int = 365) -> dict:
         "global_oi_zscore": global_oi_zscore,
         "global_liquidations": global_liq,
         "risk_appetite": risk_appetite,
+        "alt_oi_dominance": alt_oi_dominance,
         "performance": performance,
         "funding_heatmap": heatmap,
         "heatmap_dates": heatmap_dates_sorted,
