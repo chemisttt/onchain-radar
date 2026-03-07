@@ -11,7 +11,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from db import get_db
-from services import derivatives_service, funding_service
+from services import derivatives_service, funding_service, price_service
 from services.derivatives_service import SYMBOLS
 
 log = logging.getLogger("market_analyzer")
@@ -50,6 +50,9 @@ LIQ_MIN_WEIGHT = 0.20
 OB_PRICE_DIVERGENCE_PCT = 2.0
 OB_SKEW_DIVERGENCE_THRESHOLD = 0.15
 OB_SKEW_Z_CONFIRMATION = 1.5
+
+# Scalp alerts (vol_anomaly, ob_divergence) — disabled by default for swing focus
+SCALP_ALERTS_ENABLED = False
 
 # ── Regime labels ────────────────────────────────────────────────────
 
@@ -401,6 +404,142 @@ def _build_directional_alert(
     }
 
 
+# ── Trade setup builder ───────────────────────────────────────────────
+
+def _build_trade_setup(
+    direction: str,
+    price: float,
+    structure: dict,
+    liq_clusters: list[dict],
+    min_rr: float = 3.0,
+) -> dict | None:
+    """Build concrete entry/stop/TP trade plan from price structure + liq clusters.
+
+    direction: "up" (long) or "down" (short)
+    Returns dict with entry, entry_zone, stop, tp1, tp2, rr or None.
+    """
+    atr = structure.get("atr_14", 0)
+    levels = structure.get("key_levels", [])
+    if not levels or atr <= 0:
+        return None
+
+    supports = [l for l in levels if l["type"] == "support"]
+    resistances = [l for l in levels if l["type"] == "resistance"]
+
+    if direction == "up":
+        # Long: entry at nearest support below price
+        if not supports:
+            return None
+        entry_level = supports[0]  # nearest (levels sorted by distance)
+        entry = entry_level["price"]
+        entry_zone = (round(entry - 0.3 * atr, 6), round(entry + 0.3 * atr, 6))
+
+        # Stop: below entry by 1 ATR, or below nearest long liq cluster under entry — whichever is further
+        stop_atr = entry - atr
+        # Find long liq clusters below entry (these get liquidated on further drop)
+        liq_below = [c for c in liq_clusters if c["direction"] == "long" and c["level_price"] < entry]
+        stop_liq = min((c["level_price"] for c in liq_below), default=stop_atr) - 0.1 * atr
+        stop = min(stop_atr, stop_liq)
+
+        # TP1: nearest resistance above entry
+        res_above = [l for l in resistances if l["price"] > entry]
+        if not res_above:
+            return None
+        tp1 = res_above[0]["price"]
+
+        # TP2: next resistance or short liq cluster above tp1
+        tp2_candidates = [l["price"] for l in res_above[1:2]]
+        liq_short_above = [c["level_price"] for c in liq_clusters
+                           if c["direction"] == "short" and c["level_price"] > tp1]
+        tp2_candidates.extend(liq_short_above[:1])
+        tp2 = min(tp2_candidates) if tp2_candidates else None
+
+        risk = entry - stop
+        reward = tp1 - entry
+        if risk <= 0:
+            return None
+        rr = reward / risk
+
+    elif direction == "down":
+        # Short: entry at nearest resistance above price
+        if not resistances:
+            return None
+        entry_level = resistances[0]
+        entry = entry_level["price"]
+        entry_zone = (round(entry - 0.3 * atr, 6), round(entry + 0.3 * atr, 6))
+
+        # Stop: above entry by 1 ATR, or above nearest short liq cluster over entry — whichever is further
+        stop_atr = entry + atr
+        liq_above = [c for c in liq_clusters if c["direction"] == "short" and c["level_price"] > entry]
+        stop_liq = max((c["level_price"] for c in liq_above), default=stop_atr) + 0.1 * atr
+        stop = max(stop_atr, stop_liq)
+
+        # TP1: nearest support below entry
+        sup_below = [l for l in supports if l["price"] < entry]
+        if not sup_below:
+            return None
+        tp1 = sup_below[0]["price"]
+
+        # TP2: next support or long liq cluster below tp1
+        tp2_candidates = [l["price"] for l in sup_below[1:2]]
+        liq_long_below = [c["level_price"] for c in liq_clusters
+                          if c["direction"] == "long" and c["level_price"] < tp1]
+        tp2_candidates.extend(liq_long_below[:1])
+        tp2 = max(tp2_candidates) if tp2_candidates else None
+
+        risk = stop - entry
+        reward = entry - tp1
+        if risk <= 0:
+            return None
+        rr = reward / risk
+    else:
+        return None
+
+    if rr < min_rr:
+        return None
+
+    result = {
+        "direction": direction,
+        "entry": round(entry, 6),
+        "entry_zone": (round(entry_zone[0], 6), round(entry_zone[1], 6)),
+        "stop": round(stop, 6),
+        "tp1": round(tp1, 6),
+        "rr": round(rr, 1),
+    }
+    if tp2 is not None:
+        result["tp2"] = round(tp2, 6)
+    return result
+
+
+def _format_trade_setup(setup: dict, liq_clusters: list[dict]) -> str:
+    """Format trade setup as text block for alert body."""
+    entry = setup["entry"]
+    ez = setup["entry_zone"]
+    stop = setup["stop"]
+    tp1 = setup["tp1"]
+    rr = setup["rr"]
+
+    # Find what's at stop/tp levels for context
+    stop_context = "ATR-based"
+    for c in liq_clusters:
+        if abs(c["level_price"] - stop) / max(abs(stop), 1) < 0.02:
+            stop_context = f"{c['leverage']}x {c['direction']} liq"
+            break
+
+    tp1_context = "4h S/R"
+
+    lines = [
+        "\n📐 <b>TRADE PLAN:</b>",
+        f"• Entry: {_fmt_price(ez[0])} – {_fmt_price(ez[1])} ({setup['direction']})",
+        f"• Stop: {_fmt_price(stop)} ({stop_context})",
+        f"• TP1: {_fmt_price(tp1)} ({tp1_context})",
+    ]
+    if "tp2" in setup:
+        lines.append(f"• TP2: {_fmt_price(setup['tp2'])}")
+    lines.append(f"• RR: 1:{rr}")
+    return "\n".join(lines)
+
+
 # ── check_alerts() — main entry ─────────────────────────────────────
 
 async def check_alerts() -> list[dict]:
@@ -615,8 +754,8 @@ async def check_alerts() -> list[dict]:
                         ),
                     })
 
-        # 6. OB DIVERGENCE
-        if _is_ob_divergence(price_chg, ob_skew, ob_skew_z):
+        # 6. OB DIVERGENCE (scalp)
+        if SCALP_ALERTS_ENABLED and _is_ob_divergence(price_chg, ob_skew, ob_skew_z):
             ob_confluence = max(confluence, CONFLUENCE_SETUP)
             tier = _score_to_tier(ob_confluence)
             if tier:
@@ -658,10 +797,10 @@ async def check_alerts() -> list[dict]:
                     ),
                 })
 
-        # 7. VOLUME ANOMALY
+        # 7. VOLUME ANOMALY (scalp)
         # Backtest: confluence <3 gives 35-40% hit (noise), ≥3 gives 54%.
         # Require confluence ≥ CONFLUENCE_SETUP to filter noise.
-        if vol_z > Z_MODERATE and (abs(oi_z) > 1.5 or abs(fund_z) > 1.5) and confluence >= CONFLUENCE_SETUP:
+        if SCALP_ALERTS_ENABLED and vol_z > Z_MODERATE and (abs(oi_z) > 1.5 or abs(fund_z) > 1.5) and confluence >= CONFLUENCE_SETUP:
             tier = _score_to_tier(confluence)
             if tier:
                 direction = "LONG" if price_chg > 0 else "SHORT" if price_chg < 0 else "—"
@@ -689,6 +828,30 @@ async def check_alerts() -> list[dict]:
     # 9. VOL REGIME (BTC/ETH)
     vol_alerts = await _check_vol_regime(current)
     alerts.extend(vol_alerts)
+
+    # ── ATTACH TRADE SETUPS ──────────────────────────────────
+    # For each directional alert, try to build a concrete trade plan
+    _directional_types = {"overheat", "capitulation", "divergence_squeeze", "divergence_top", "liq_flush"}
+    for alert in alerts:
+        key = alert.get("key", "")
+        alert_type = key.split(":")[0] if ":" in key else ""
+        if alert_type not in _directional_types:
+            continue
+        sym = alert.get("symbol", "")
+        if not sym:
+            continue
+        structure = price_service.get_price_structure(sym)
+        if not structure:
+            continue
+        expected_dir = _expected_direction(alert)
+        if not expected_dir:
+            continue
+        # Get liq clusters for stop/tp context
+        liq_clusters_for_setup = await _check_liq_proximity(sym, alert.get("entry_price", 0))
+        setup = _build_trade_setup(expected_dir, alert.get("entry_price", 0), structure, liq_clusters_for_setup)
+        if setup:
+            alert["trade_setup"] = setup
+            alert["body"] += _format_trade_setup(setup, liq_clusters_for_setup)
 
     # Store snapshot
     _store_snapshot(current)

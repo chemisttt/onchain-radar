@@ -190,3 +190,12 @@ CREATE TABLE IF NOT EXISTS alert_tracking (
     return_1d REAL, return_3d REAL, return_7d REAL
 );
 CREATE INDEX IF NOT EXISTS idx_alert_tracking_fired ON alert_tracking(fired_at);
+
+-- 4h OHLCV candles for price structure analysis
+CREATE TABLE IF NOT EXISTS ohlcv_4h (
+    symbol TEXT NOT NULL,
+    ts INTEGER NOT NULL,        -- open timestamp ms
+    open REAL, high REAL, low REAL, close REAL,
+    volume REAL,
+    PRIMARY KEY (symbol, ts)
+);
