@@ -1050,49 +1050,62 @@ async def check_alerts() -> list[dict]:
 
         # ── STRUCTURAL ALERTS ────────────────────────────────
 
-        # 5. LIQ PROXIMITY — alert each cluster separately (cascade-friendly)
-        #    Only fire when actual confluence >= SIGNAL (extreme z-scores present).
-        #    Without this guard, every symbol fires liq alerts → Telegram flood.
+        # 5. LIQ PROXIMITY — single merged alert per symbol (12h cooldown)
+        #    Shows both long/short clusters as a range around price.
         if confluence >= CONFLUENCE_SIGNAL and liq_clusters:
             tier = _score_to_tier(confluence)
             if tier:
-                for cluster in liq_clusters:
-                    direction = cluster["direction"]
-                    # Directional filter: skip safe-side clusters
-                    if is_bullish is True and direction == "long":
-                        continue  # bullish → longs are safe
-                    if is_bullish is False and direction == "short":
-                        continue  # bearish → shorts are safe
-                    dist = cluster["distance_pct"]
-                    lev_price = cluster["level_price"]
-                    leverage = cluster["leverage"]
-                    vol = cluster["volume_usd"]
+                long_clusters = [c for c in liq_clusters if c["direction"] == "long"]
+                short_clusters = [c for c in liq_clusters if c["direction"] == "short"]
+
+                # Only alert if at least one side has clusters
+                if long_clusters or short_clusters:
+                    # Pick biggest cluster per side
+                    top_long = long_clusters[0] if long_clusters else None
+                    top_short = short_clusters[0] if short_clusters else None
+
+                    # Build title
+                    parts = []
+                    if top_long:
+                        parts.append(f"longs ↓{_fmt_price(top_long['level_price'])} ({_fmt_usd(top_long['volume_usd'])})")
+                    if top_short:
+                        parts.append(f"shorts ↑{_fmt_price(top_short['level_price'])} ({_fmt_usd(top_short['volume_usd'])})")
+                    range_str = " | ".join(parts)
 
                     what_we_see = [
-                        f"Liq cluster: {_fmt_price(lev_price)} ({leverage}x {direction}s, -{dist:.1f}%)",
-                        f"Estimated volume at level: {_fmt_usd(vol)}",
                         f"Price: {_fmt_price(price)} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
                     ]
+                    if top_long:
+                        what_we_see.append(f"Long liq: {_fmt_price(top_long['level_price'])} ({top_long['leverage']}x, -{top_long['distance_pct']:.1f}%, {_fmt_usd(top_long['volume_usd'])})")
+                    if top_short:
+                        what_we_see.append(f"Short liq: {_fmt_price(top_short['level_price'])} ({top_short['leverage']}x, +{top_short['distance_pct']:.1f}%, {_fmt_usd(top_short['volume_usd'])})")
                     what_we_see.extend(_velocity_context_lines(velocities))
 
+                    indicators = []
+                    if top_long and top_short:
+                        indicators.append(f"Цена зажата: {_fmt_price(top_long['level_price'])} — {_fmt_price(top_short['level_price'])}")
+                        indicators.append(f"Пробой в любую сторону → каскад ликвидаций")
+                    elif top_long:
+                        indicators.append(f"Каскадные ликвидации лонгов ниже {_fmt_price(top_long['level_price'])}")
+                    else:
+                        indicators.append(f"Сквиз шортов выше {_fmt_price(top_short['level_price'])}")
+                    indicators.append(f"Совпадение факторов: {confluence} ({', '.join(factors[:3])})")
+
                     alerts.append({
-                        "key": f"liq_proximity:{sym}:{direction}:{leverage}x",
+                        "key": f"liq_proximity:{sym}",
                         "symbol": sym,
                         "price_change_pct": price_chg,
                         "tier": tier,
                         "confluence": confluence,
                         "entry_price": price,
-                        "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
+                        "cooldown_hours": 12,
+                        "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ MAP — {range_str}",
                         "body": _format_alert_body(
                             what_we_see,
-                            indicators=[
-                                f"{'Каскадные ликвидации лонгов ниже ' + _fmt_price(lev_price) if direction == 'long' else 'Сквиз шортов выше ' + _fmt_price(lev_price)}",
-                                f"Плечо {leverage}x → ликвидация при движении {100/leverage:.0f}% от входа",
-                                f"Совпадение факторов: {confluence} ({', '.join(factors[:3])})",
-                            ],
+                            indicators=indicators,
                             action=[
-                                f"{'Ждать отскок от уровня ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать отбой от уровня ' + _fmt_price(lev_price)}",
-                                f"{'Выставить лимитки чуть ниже уровня ликвидаций' if direction == 'long' else 'Подтянуть стопы выше уровня ликвидаций'}",
+                                "Стопы за уровнями ликвидаций, не на них",
+                                "Пробой уровня = ускорение движения",
                                 "Следить за ликвидациями в реальном времени",
                             ],
                             tier=tier,

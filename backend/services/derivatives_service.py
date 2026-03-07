@@ -476,28 +476,18 @@ async def _backfill():
     Then compute rolling z-scores for all dates."""
     db = get_db()
 
-    # Check per-symbol: backfill symbols missing funding OR OI history
+    # Check per-symbol: only backfill symbols missing funding history
+    # Note: OI/taker APIs only provide ~30 days history, so we check funding (500+ days available)
     needs_funding = await db.execute_fetchall(
         """SELECT symbol, COUNT(*) as cnt FROM daily_derivatives
            WHERE funding_rate != 0 AND funding_rate IS NOT NULL
            GROUP BY symbol"""
     )
     funded = {r["symbol"]: r["cnt"] for r in needs_funding}
-
-    needs_oi = await db.execute_fetchall(
-        """SELECT symbol, COUNT(*) as cnt FROM daily_derivatives
-           WHERE open_interest_usd > 0
-           GROUP BY symbol"""
-    )
-    oi_filled = {r["symbol"]: r["cnt"] for r in needs_oi}
-
-    symbols_needed = [
-        s for s in SYMBOLS
-        if funded.get(s, 0) < 90 or oi_filled.get(s, 0) < 90
-    ]
+    symbols_needed = [s for s in SYMBOLS if funded.get(s, 0) < 90]
 
     if not symbols_needed:
-        log.info("Derivatives backfill skipped: all symbols have 90+ days funding+OI data")
+        log.info("Derivatives backfill skipped: all symbols have 90+ days funding data")
         return
 
     log.info(f"Starting derivatives backfill for {len(symbols_needed)} symbols...")
@@ -532,13 +522,15 @@ async def _backfill_symbol(
     ) as resp:
         klines = await resp.json() if resp.status == 200 else []
 
-    # 2. OI history (daily, paginated via startTime — 500/page × 2 pages = ~1000 days)
-    oi_data = await _paginated_fetch(
-        session,
+    # 2. OI history (daily, max ~30 days — API doesn't support startTime/pagination)
+    async with session.get(
         "https://fapi.binance.com/futures/data/openInterestHist",
-        {"symbol": bn_sym, "period": "1d", "limit": 500, "startTime": start_ts},
-        pages=2,
-    )
+        params={"symbol": bn_sym, "period": "1d", "limit": 500},
+        timeout=timeout,
+    ) as resp:
+        oi_data = await resp.json() if resp.status == 200 else []
+        if not isinstance(oi_data, list):
+            oi_data = []
 
     # 3. Funding rate history (paginated, up to ~666 days)
     funding_all: list[dict] = []
@@ -558,13 +550,15 @@ async def _backfill_symbol(
             page_ts = int(page[-1].get("fundingTime", 0)) + 1
         await asyncio.sleep(0.1)
 
-    # 4. Taker long/short ratio (daily, paginated — 500/page × 2 pages)
-    taker_data = await _paginated_fetch(
-        session,
+    # 4. Taker long/short ratio (daily, max ~30 days — API doesn't support startTime)
+    async with session.get(
         "https://fapi.binance.com/futures/data/takerlongshortRatio",
-        {"symbol": bn_sym, "period": "1d", "limit": 500, "startTime": start_ts},
-        pages=2,
-    )
+        params={"symbol": bn_sym, "period": "1d", "limit": 500},
+        timeout=timeout,
+    ) as resp:
+        taker_data = await resp.json() if resp.status == 200 else []
+        if not isinstance(taker_data, list):
+            taker_data = []
 
     # Build maps
     oi_map: dict[str, float] = {}

@@ -217,7 +217,7 @@ async def _poll_loop():
                             if price_chg < ALT_MIN_PRICE_CHANGE:
                                 continue
 
-                        cooldown = ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
+                        cooldown = alert.get("cooldown_hours", 0) * 3600 if alert.get("cooldown_hours") else ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
                         if now_ts - _alert_cooldowns.get(key, 0) < cooldown:
                             continue
 
