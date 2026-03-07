@@ -532,8 +532,8 @@ async def _get_multi_day_batch() -> dict[str, dict]:
     """
     db = get_db()
     rows = await db.execute_fetchall(
-        """SELECT symbol, date, close_price, open_interest_usd, funding_rate,
-                  liquidations_long, liquidations_short, volume_usd
+        """SELECT symbol, date, close_price, open_interest_usd, oi_binance_usd,
+                  funding_rate, liquidations_long, liquidations_short, volume_usd
            FROM daily_derivatives
            ORDER BY symbol, date ASC""",
     )
@@ -562,7 +562,8 @@ async def _get_multi_day_batch() -> dict[str, dict]:
             continue
 
         prices = [r["close_price"] or 0 for r in sym_rows]
-        ois = [r["open_interest_usd"] or 0 for r in sym_rows]
+        # Use Binance-only OI for multi-day changes (fallback to aggregate for old data)
+        ois = [(r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0) for r in sym_rows]
         fundings = [r["funding_rate"] or 0 for r in sym_rows]
         liq_longs = [r["liquidations_long"] or 0 for r in sym_rows]
         liq_shorts = [r["liquidations_short"] or 0 for r in sym_rows]
@@ -1186,6 +1187,22 @@ async def check_alerts() -> list[dict]:
         if setup:
             alert["trade_setup"] = setup
             alert["body"] += _format_trade_setup(setup, liq_clusters_for_setup)
+
+    # ── Exchange whale alerts ────────────────────────────────────────
+    anomalies = derivatives_service.get_exchange_anomalies()
+    for a in anomalies:
+        short_sym = a["symbol"].replace("USDT", "")
+        direction = "+" if a["delta"] > 0 else "-"
+        alerts.append({
+            "key": f"whale_oi:{a['symbol']}:{a['exchange']}",
+            "symbol": a["symbol"],
+            "tier": "INFO",
+            "cooldown_hours": 6,
+            "title": f"\U0001f40b {short_sym} — {a['exchange'].upper()} OI {direction}{_fmt_usd(abs(a['delta']))}",
+            "body": f"• {a['exchange'].title()} OI: {_fmt_usd(a['prev'])} → {_fmt_usd(a['current'])} ({a['change_pct']:+.1f}%)\n"
+                    f"• Binance OI stable ({a['bn_change_pct']:+.1f}%)\n"
+                    f"• Возможно крупная позиция открыта/закрыта на {a['exchange'].title()}",
+        })
 
     # Store snapshot
     _store_snapshot(current)

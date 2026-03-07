@@ -17,6 +17,14 @@ async def init_db():
     await _db.executescript(schema.read_text())
     await _db.commit()
 
+    # Migration: add oi_binance_usd column
+    for tbl in ["daily_derivatives", "derivatives_4h"]:
+        try:
+            await _db.execute(f"ALTER TABLE {tbl} ADD COLUMN oi_binance_usd REAL DEFAULT 0")
+            await _db.commit()
+        except Exception:
+            pass  # column already exists
+
 
 def get_db() -> aiosqlite.Connection:
     assert _db is not None, "DB not initialized"

@@ -37,6 +37,26 @@ _cache_ts: float = 0
 _CACHE_TTL = 45
 _fetch_lock: asyncio.Lock | None = None
 
+# ── Exchange OI anomaly detection ────────────────────────────────────
+_prev_exchange_oi: dict[str, dict[str, float]] = {}  # sym → {exchange: oi_usd}
+_exchange_anomalies: list[dict] = []
+
+
+def get_exchange_anomalies() -> list[dict]:
+    """Pop and return accumulated exchange OI anomalies."""
+    global _exchange_anomalies
+    result = _exchange_anomalies
+    _exchange_anomalies = []
+    return result
+
+
+def _fmt_usd_log(val: float) -> str:
+    if abs(val) >= 1e9:
+        return f"${val / 1e9:.1f}B"
+    if abs(val) >= 1e6:
+        return f"${val / 1e6:.0f}M"
+    return f"${val:,.0f}"
+
 
 def _get_lock() -> asyncio.Lock:
     global _fetch_lock
@@ -282,7 +302,8 @@ async def _compute_all_zscores():
 
     for sym in SYMBOLS:
         rows = await db.execute_fetchall(
-            """SELECT date, open_interest_usd, funding_rate, liquidations_delta, volume_usd, close_price
+            """SELECT date, open_interest_usd, oi_binance_usd, funding_rate,
+                      liquidations_delta, volume_usd, close_price
                FROM daily_derivatives
                WHERE symbol = ?
                ORDER BY date ASC""",
@@ -291,7 +312,8 @@ async def _compute_all_zscores():
         if len(rows) < 7:
             continue
 
-        oi_vals = [r["open_interest_usd"] or 0 for r in rows]
+        # Use Binance-only OI for z-scores (fallback to aggregate for old data)
+        oi_vals = [(r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0) for r in rows]
         fund_vals = [r["funding_rate"] or 0 for r in rows]
         liq_vals = [abs(r["liquidations_delta"] or 0) for r in rows]
         vol_vals = [r["volume_usd"] or 0 for r in rows]
@@ -304,13 +326,12 @@ async def _compute_all_zscores():
         liq_z, liq_p = _compute_zscore(liq_vals)
         vol_z, vol_p = _compute_zscore(vol_vals)
 
-        # 24h changes — only compute if we have consecutive days
+        # 24h changes — Binance-only OI, consecutive days only
         oi_change = 0.0
         price_change = 0.0
         if len(rows) >= 2:
             prev_date = rows[-2]["date"]
             curr_date = rows[-1]["date"]
-            # Only compare if dates are consecutive (avoid backfill vs live mismatch)
             try:
                 from datetime import date as _date
                 d1 = _date.fromisoformat(prev_date)
@@ -411,6 +432,7 @@ async def _fetch_and_save():
                 "price": price, "oi": total_oi, "funding": funding,
                 "volume": volume, "liq_long": liq_long,
                 "liq_short": liq_short, "liq_delta": liq_delta,
+                "oi_bn": bn.get("oi_usd", 0) if bn else 0,
             }
 
     # Daily upsert
@@ -419,8 +441,9 @@ async def _fetch_and_save():
         await db.execute(
             """INSERT INTO daily_derivatives
                (symbol, date, close_price, open_interest_usd, funding_rate,
-                liquidations_long, liquidations_short, liquidations_delta, volume_usd)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                liquidations_long, liquidations_short, liquidations_delta, volume_usd,
+                oi_binance_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(symbol, date) DO UPDATE SET
                  close_price = excluded.close_price,
                  open_interest_usd = excluded.open_interest_usd,
@@ -429,9 +452,11 @@ async def _fetch_and_save():
                  liquidations_short = daily_derivatives.liquidations_short + excluded.liquidations_short,
                  liquidations_delta = daily_derivatives.liquidations_delta + excluded.liquidations_delta,
                  volume_usd = excluded.volume_usd,
+                 oi_binance_usd = excluded.oi_binance_usd,
                  fetched_at = datetime('now')""",
             (sym, today, sd["price"], sd["oi"], sd["funding"],
-             sd["liq_long"], sd["liq_short"], sd["liq_delta"], sd["volume"]),
+             sd["liq_long"], sd["liq_short"], sd["liq_delta"], sd["volume"],
+             sd["oi_bn"]),
         )
         saved += 1
 
@@ -445,15 +470,65 @@ async def _fetch_and_save():
             await db.execute(
                 """INSERT OR IGNORE INTO derivatives_4h
                    (symbol, ts, close_price, open_interest_usd, funding_rate,
-                    liquidations_long, liquidations_short, liquidations_delta, volume_usd)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    liquidations_long, liquidations_short, liquidations_delta, volume_usd,
+                    oi_binance_usd)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (sym, snap_ts_ms, sd["price"], sd["oi"], sd["funding"],
-                 sd["liq_long"], sd["liq_short"], sd["liq_delta"], sd["volume"]),
+                 sd["liq_long"], sd["liq_short"], sd["liq_delta"], sd["volume"],
+                 sd["oi_bn"]),
             )
         _last_4h_ts = snap_ts
         log.info(f"4h snapshot saved at {snap_ts}")
 
     await db.commit()
+
+    # ── Exchange OI anomaly detection ─────────────────────────────────
+    global _prev_exchange_oi, _exchange_anomalies
+    exchange_sources = {"binance": bn_oi, "bybit": bb_oi, "okx": okx_oi, "bitget": bg_oi}
+    for sym in SYMBOLS:
+        current_ois: dict[str, float] = {}
+        bn = bn_oi.get(sym, {})
+        bn_current = bn.get("oi_usd", 0) if bn else 0
+        for ex_name, ex_data in exchange_sources.items():
+            ex = ex_data.get(sym, {})
+            if not ex:
+                continue
+            oi = ex.get("oi_usd", 0)
+            if oi <= 0 and "oi_coins" in ex and symbol_data.get(sym, {}).get("price", 0) > 0:
+                oi = ex["oi_coins"] * symbol_data[sym]["price"]
+            if oi > 0:
+                current_ois[ex_name] = oi
+
+        prev = _prev_exchange_oi.get(sym, {})
+        if prev:
+            for ex_name, cur_oi in current_ois.items():
+                if ex_name == "binance":
+                    continue
+                prev_oi = prev.get(ex_name, 0)
+                if prev_oi <= 0:
+                    continue
+                delta = cur_oi - prev_oi
+                change_pct = delta / prev_oi * 100
+                # Anomaly: one exchange OI delta > $200M AND change > 15%, Binance stable
+                if abs(delta) > 200_000_000 and abs(change_pct) > 15:
+                    bn_prev = prev.get("binance", 0)
+                    bn_change_pct = ((bn_current - bn_prev) / bn_prev * 100) if bn_prev > 0 else 0
+                    if abs(bn_change_pct) < 3:
+                        _exchange_anomalies.append({
+                            "symbol": sym,
+                            "exchange": ex_name,
+                            "prev": prev_oi,
+                            "current": cur_oi,
+                            "delta": delta,
+                            "change_pct": change_pct,
+                            "bn_change_pct": bn_change_pct,
+                        })
+                        log.warning(
+                            f"Exchange OI anomaly: {sym} {ex_name} "
+                            f"{_fmt_usd_log(prev_oi)} → {_fmt_usd_log(cur_oi)} "
+                            f"({change_pct:+.1f}%), Binance stable ({bn_change_pct:+.1f}%)"
+                        )
+        _prev_exchange_oi[sym] = current_ois
 
     # Recompute z-scores
     await _compute_all_zscores()
@@ -601,8 +676,9 @@ async def _backfill_symbol(
         await db.execute(
             """INSERT INTO daily_derivatives
                (symbol, date, close_price, open_interest_usd, funding_rate,
-                liquidations_long, liquidations_short, liquidations_delta, volume_usd)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                liquidations_long, liquidations_short, liquidations_delta, volume_usd,
+                oi_binance_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(symbol, date) DO UPDATE SET
                  close_price = COALESCE(excluded.close_price, daily_derivatives.close_price),
                  open_interest_usd = CASE WHEN excluded.open_interest_usd > 0
@@ -620,8 +696,11 @@ async def _backfill_symbol(
                  liquidations_delta = CASE WHEN excluded.liquidations_long > 0
                                            THEN excluded.liquidations_delta
                                            ELSE daily_derivatives.liquidations_delta END,
-                 volume_usd = COALESCE(excluded.volume_usd, daily_derivatives.volume_usd)""",
-            (sym, dt, close_price, oi_usd, funding, liq_long, liq_short, liq_delta, volume),
+                 volume_usd = COALESCE(excluded.volume_usd, daily_derivatives.volume_usd),
+                 oi_binance_usd = CASE WHEN excluded.oi_binance_usd > 0
+                                       THEN excluded.oi_binance_usd
+                                       ELSE daily_derivatives.oi_binance_usd END""",
+            (sym, dt, close_price, oi_usd, funding, liq_long, liq_short, liq_delta, volume, oi_usd),
         )
         saved += 1
 
@@ -637,8 +716,8 @@ async def _backfill_rolling_zscores():
 
     for sym in SYMBOLS:
         rows = await db.execute_fetchall(
-            """SELECT date, close_price, open_interest_usd, funding_rate,
-                      liquidations_delta, volume_usd
+            """SELECT date, close_price, open_interest_usd, oi_binance_usd,
+                      funding_rate, liquidations_delta, volume_usd
                FROM daily_derivatives
                WHERE symbol = ?
                ORDER BY date ASC""",
@@ -647,7 +726,8 @@ async def _backfill_rolling_zscores():
         if len(rows) < 7:
             continue
 
-        oi_all = [r["open_interest_usd"] or 0 for r in rows]
+        # Use Binance-only OI with fallback to aggregate for old data
+        oi_all = [(r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0) for r in rows]
         fund_all = [r["funding_rate"] or 0 for r in rows]
         liq_all = [abs(r["liquidations_delta"] or 0) for r in rows]
         vol_all = [r["volume_usd"] or 0 for r in rows]
