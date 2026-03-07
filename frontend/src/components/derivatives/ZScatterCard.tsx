@@ -58,7 +58,10 @@ export default function ZScatterCard({ title, history, zKey, currentZ }: ZScatte
 
     for (let i = 0; i < history.length - period; i++) {
       const z = Number(history[i][zKey]) || 0
-      const ret = ((history[i + period].price - history[i].price) / history[i].price) * 100
+      if (z === 0) continue // skip dates with no data (backfill gaps)
+      const p0 = history[i].price
+      if (!p0) continue
+      const ret = ((history[i + period].price - p0) / p0) * 100
       pts.push({ z, ret })
     }
 
