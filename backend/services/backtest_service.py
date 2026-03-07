@@ -158,38 +158,60 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
             oi_z, fund_z, liq_z, vol_z, price_momentum, z_accel,
         )
 
-        # Check conditions
+        # Multi-day changes (3d, 5d) for broader divergence detection
+        price_3d_ago = prices[i - 3] if i >= 3 else prices[0]
+        oi_3d_ago = ois[i - 3] if i >= 3 else ois[0]
+        price_chg_3d = ((price - price_3d_ago) / price_3d_ago * 100) if price_3d_ago > 0 else 0
+        oi_chg_3d = ((ois[i] - oi_3d_ago) / oi_3d_ago * 100) if oi_3d_ago > 0 else 0
+
+        price_5d_ago2 = prices[i - 5] if i >= 5 else prices[0]
+        oi_5d_ago = ois[i - 5] if i >= 5 else ois[0]
+        price_chg_5d = ((price - price_5d_ago2) / price_5d_ago2 * 100) if price_5d_ago2 > 0 else 0
+        oi_chg_5d = ((ois[i] - oi_5d_ago) / oi_5d_ago * 100) if oi_5d_ago > 0 else 0
+
+        # Check conditions — EVENT-based signals only (proven profitable)
         triggered: list[tuple[str, str]] = []
 
-        # 1. OVERHEAT — OI + funding both elevated
-        if oi_z > Z_MODERATE and fund_z > Z_MODERATE:
+        # 1. OVERHEAT — OI + funding both elevated (relaxed: fund > 1.0)
+        if oi_z > Z_MODERATE and fund_z > 1.0:
             triggered.append(("overheat", "short"))
 
-        # 2. CAPITULATION — both washed out
-        if oi_z < -Z_MODERATE and fund_z < -Z_MODERATE:
+        # 2. CAPITULATION — both washed out (relaxed: fund < -1.0)
+        if oi_z < -Z_MODERATE and fund_z < -1.0:
             triggered.append(("capitulation", "long"))
 
-        # 3. OI EXTREME — standalone OI z-score (relaxed: no funding requirement)
-        if abs(oi_z) > 2.5 and abs(fund_z) <= Z_MODERATE:
-            direction = "short" if oi_z > 0 else "long"
-            triggered.append(("oi_extreme", direction))
-
-        # 4. DIVERGENCE SQUEEZE (OI↑ Price↓) — relaxed thresholds
+        # 3. DIVERGENCE SQUEEZE 1D (OI↑ Price↓)
         if oi_chg > 5 and price_chg < -1.5:
-            triggered.append(("divergence_squeeze", "short"))
+            triggered.append(("div_squeeze_1d", "short"))
 
-        # 5. DIVERGENCE TOP (OI↓ Price↑) — relaxed thresholds
+        # 4. DIVERGENCE SQUEEZE 3D (slower buildup)
+        if oi_chg_3d > 8 and price_chg_3d < -3:
+            triggered.append(("div_squeeze_3d", "short"))
+
+        # 5. DIVERGENCE SQUEEZE 5D (even slower)
+        if oi_chg_5d > 12 and price_chg_5d < -5:
+            triggered.append(("div_squeeze_5d", "short"))
+
+        # 6. DIVERGENCE TOP 1D (OI↓ Price↑)
         if oi_chg < -5 and price_chg > 3:
-            triggered.append(("divergence_top", "short"))
+            triggered.append(("div_top_1d", "short"))
 
-        # 6. LIQ FLUSH — relaxed
+        # 7. DIVERGENCE TOP 3D
+        if oi_chg_3d < -8 and price_chg_3d > 5:
+            triggered.append(("div_top_3d", "short"))
+
+        # 8. LIQ FLUSH — cascade liquidation + OI dump
         if liq_z > 1.5 and price_chg < -3 and oi_chg < -2:
             triggered.append(("liq_flush", "long"))
 
-        # 7. FUNDING EXTREME — standalone
-        if abs(fund_z) > 2.5:
-            direction = "short" if fund_z > 0 else "long"
-            triggered.append(("funding_extreme", direction))
+        # 9. LIQ FLUSH 3D — slower flush
+        if liq_z > 1.5 and price_chg_3d < -5 and oi_chg_3d < -5:
+            triggered.append(("liq_flush_3d", "long"))
+
+        # 10. VOLUME DIVERGENCE — volume spike but OI drops (closing, not opening)
+        if vol_z > Z_MODERATE and oi_chg < -3 and abs(price_chg) > 2:
+            direction = "long" if price_chg < 0 else "short"  # contrarian after flush
+            triggered.append(("vol_divergence", direction))
 
         for alert_type, direction in triggered:
             tier = _score_to_tier(confluence)
