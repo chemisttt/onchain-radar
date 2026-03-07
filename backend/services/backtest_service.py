@@ -702,8 +702,8 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
         if fund_z > 1.5 and price_momentum > 3:
             triggered.append(("fund_spike", "short"))
 
-        # 1-candle div squeeze (scaled ÷3)
-        if oi_chg > 1 and price_chg < -0.3:
+        # 1-candle div squeeze (tightened: oi>2%, price<-1%)
+        if oi_chg > 2 and price_chg < -1:
             triggered.append(("div_squeeze_1d", "short"))
 
         # 6-candle (~1d) div squeeze ≈ daily 1d
@@ -748,7 +748,7 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
         if liq_long_z > 2.5 and price_chg_6 < -4 and oi_chg_6 < -3 and trend != "down":
             triggered.append(("liq_long_flush", "long"))
 
-        if liq_short_z > 2.0 and price_chg_6 > 2:
+        if liq_short_z > 3.0 and price_chg_6 > 4:
             triggered.append(("liq_short_squeeze", "long"))
 
         if i >= 18:
@@ -780,8 +780,8 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
             )
 
             tier = _score_to_tier(confluence)
-            if not tier:
-                continue
+            if not tier or confluence < CONFLUENCE_SIGNAL:
+                continue  # 4h: min SIGNAL tier (no SETUP noise)
 
             cd_key = f"{alert_type}:{symbol}"
             if cd_key in cooldowns:

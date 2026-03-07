@@ -692,55 +692,111 @@ async def _backfill_rolling_zscores():
 
 # ── 4h Backfill (Binance only — historical multi-exchange unavailable) ──
 
+async def _paginated_fetch(
+    session: aiohttp.ClientSession, url: str, params: dict,
+    pages: int = 5, ts_field: str = "timestamp",
+) -> list[dict]:
+    """Fetch paginated Binance data using startTime."""
+    all_data: list[dict] = []
+    timeout = aiohttp.ClientTimeout(total=20)
+    start_time = params.pop("startTime", None)
+
+    for _ in range(pages):
+        p = {**params}
+        if start_time:
+            p["startTime"] = start_time
+        try:
+            async with session.get(url, params=p, timeout=timeout) as resp:
+                if resp.status != 200:
+                    break
+                page = await resp.json()
+                if not page:
+                    break
+                all_data.extend(page)
+                # Next page starts after last record
+                last_ts = int(page[-1].get(ts_field, 0))
+                start_time = last_ts + 1
+                if len(page) < int(params.get("limit", 500)):
+                    break  # last page
+        except Exception:
+            break
+        await asyncio.sleep(0.1)
+    return all_data
+
+
+async def _paginated_klines(
+    session: aiohttp.ClientSession, symbol: str, start_ts: int,
+) -> list[list]:
+    """Fetch paginated klines (up to 1500 per page)."""
+    all_klines: list[list] = []
+    timeout = aiohttp.ClientTimeout(total=20)
+    cursor = start_ts
+
+    for _ in range(3):  # 3 pages × 1500 = 4500 candles (~750 days)
+        try:
+            async with session.get(
+                "https://fapi.binance.com/fapi/v1/klines",
+                params={"symbol": symbol, "interval": "4h", "limit": 1500, "startTime": cursor},
+                timeout=timeout,
+            ) as resp:
+                if resp.status != 200:
+                    break
+                page = await resp.json()
+                if not page:
+                    break
+                all_klines.extend(page)
+                cursor = int(page[-1][0]) + 1
+                if len(page) < 1500:
+                    break
+        except Exception:
+            break
+        await asyncio.sleep(0.1)
+    return all_klines
+
+
 async def _backfill_4h():
-    """Backfill 4h derivatives data from Binance (~83 days per endpoint).
-    OI hist (4h), klines (4h), taker ratio (4h). Runs once on startup."""
+    """Backfill ~365 days of 4h derivatives data from Binance.
+    Paginates OI hist, klines, taker ratio. ~3MB total for 30 symbols."""
     db = get_db()
 
-    # Check if we already have enough 4h data
+    # Check if we already have enough data (~2000 per symbol = ~330 days)
     rows = await db.execute_fetchall(
         "SELECT COUNT(*) as c FROM derivatives_4h"
     )
     cnt = rows[0]["c"] if rows else 0
-    if cnt > 1000:
-        log.info("4h backfill skipped: already have data")
+    if cnt > 50000:  # 30 syms × ~2000 = 60k target
+        log.info(f"4h backfill skipped: {cnt} rows already")
         return
 
-    log.info("Starting 4h derivatives backfill...")
-    timeout = aiohttp.ClientTimeout(total=20)
+    # Start from 400 days ago
+    start_ts = int((datetime.now(timezone.utc) - timedelta(days=400)).timestamp() * 1000)
+
+    log.info("Starting 4h derivatives backfill (paginated, ~365 days)...")
 
     async with aiohttp.ClientSession() as session:
         for sym in SYMBOLS:
             bn_sym = _binance_sym(sym)
             try:
-                # 1. OI history 4h
-                async with session.get(
+                # 1. Klines (paginated, up to 4500 = ~750 days)
+                klines = await _paginated_klines(session, bn_sym, start_ts)
+                await asyncio.sleep(0.1)
+
+                # 2. OI history (paginated, 500 per page × 5 = 2500 = ~416 days)
+                oi_data = await _paginated_fetch(
+                    session,
                     "https://fapi.binance.com/futures/data/openInterestHist",
-                    params={"symbol": bn_sym, "period": "4h", "limit": 500},
-                    timeout=timeout,
-                ) as resp:
-                    oi_data = await resp.json() if resp.status == 200 else []
-
+                    {"symbol": bn_sym, "period": "4h", "limit": 500, "startTime": start_ts},
+                    pages=5,
+                )
                 await asyncio.sleep(0.1)
 
-                # 2. Klines 4h (price + volume)
-                async with session.get(
-                    "https://fapi.binance.com/fapi/v1/klines",
-                    params={"symbol": bn_sym, "interval": "4h", "limit": 500},
-                    timeout=timeout,
-                ) as resp:
-                    klines = await resp.json() if resp.status == 200 else []
-
-                await asyncio.sleep(0.1)
-
-                # 3. Taker ratio 4h (liq proxy)
-                async with session.get(
+                # 3. Taker ratio (paginated, same)
+                taker_data = await _paginated_fetch(
+                    session,
                     "https://fapi.binance.com/futures/data/takerlongshortRatio",
-                    params={"symbol": bn_sym, "period": "4h", "limit": 500},
-                    timeout=timeout,
-                ) as resp:
-                    taker_data = await resp.json() if resp.status == 200 else []
-
+                    {"symbol": bn_sym, "period": "4h", "limit": 500, "startTime": start_ts},
+                    pages=5,
+                )
                 await asyncio.sleep(0.1)
 
                 # Build maps by timestamp (ms)
@@ -756,12 +812,12 @@ async def _backfill_4h():
                     sell = float(item.get("sellVol", 0) or 0)
                     taker_map[ts] = (buy, sell)
 
-                # Klines as base
+                # Klines as base — INSERT OR IGNORE (don't overwrite live data)
                 saved = 0
                 for k in klines:
                     ts_ms = int(k[0])
                     close_price = float(k[4])
-                    volume = float(k[7])  # quote volume
+                    volume = float(k[7])
                     oi_usd = oi_map.get(ts_ms, 0)
                     liq_long, liq_short = taker_map.get(ts_ms, (0, 0))
                     liq_delta = liq_long - liq_short
@@ -781,7 +837,7 @@ async def _backfill_4h():
 
             except Exception as e:
                 log.warning(f"4h backfill {sym}: {e}")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.3)
 
     log.info("4h derivatives backfill complete")
 

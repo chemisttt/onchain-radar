@@ -155,8 +155,8 @@ async def get_backtest(
     all_alerts = real_alerts + simulated
     all_alerts.sort(key=lambda a: a["time"])
 
-    # Stats helper — MAE > 5% means you got stopped out, it's a loss
-    MAE_STOP = 5.0  # max adverse excursion threshold (%)
+    # Stats helpers
+    MFE_TARGET = 3.0  # % — "price reached +3% in your direction"
 
     def _directional_return(a: dict) -> float | None:
         ret = a.get("return_7d") or a.get("return_3d") or a.get("return_1d")
@@ -167,17 +167,18 @@ async def get_backtest(
         return ret
 
     def _is_win(a: dict) -> bool:
-        """Win = positive return AND didn't get stopped out by MAE."""
+        """Win = positive directional return (no MAE filter)."""
         ret = _directional_return(a)
-        if ret is None or ret <= 0:
-            return False
-        mae = a.get("mae_return")
-        if mae is not None and mae > MAE_STOP:
-            return False  # stopped out — can't count as win
-        return True
+        return ret is not None and ret > 0
+
+    def _mfe_hit(a: dict) -> bool:
+        """MFE hit = price reached target in your direction (trader's WR)."""
+        mfe = a.get("mfe_return")
+        return mfe is not None and mfe >= MFE_TARGET
 
     with_returns = [a for a in all_alerts if _directional_return(a) is not None]
     wins = sum(1 for a in with_returns if _is_win(a))
+    mfe_wins = sum(1 for a in with_returns if _mfe_hit(a))
     total_return = sum(_directional_return(a) or 0 for a in with_returns)
 
     # Per-type breakdown
@@ -185,13 +186,16 @@ async def get_backtest(
     for a in all_alerts:
         t = a["type"]
         if t not in type_stats:
-            type_stats[t] = {"count": 0, "wins": 0, "returns": []}
+            type_stats[t] = {"count": 0, "wins": 0, "mfe_wins": 0, "returns": [], "mfes": []}
         type_stats[t]["count"] += 1
         ret = _directional_return(a)
         if ret is not None:
             type_stats[t]["returns"].append(ret)
+            type_stats[t]["mfes"].append(a.get("mfe_return") or 0)
             if _is_win(a):
                 type_stats[t]["wins"] += 1
+            if _mfe_hit(a):
+                type_stats[t]["mfe_wins"] += 1
 
     by_type = {}
     for t, ts in type_stats.items():
@@ -199,10 +203,13 @@ async def get_backtest(
         n = len(rets)
         gains = sum(r for r in rets if r > 0)
         losses = abs(sum(r for r in rets if r < 0))
+        avg_mfe = sum(ts["mfes"]) / n if n > 0 else 0
         by_type[t] = {
             "count": ts["count"],
             "win_rate": round(ts["wins"] / n * 100, 1) if n > 0 else 0,
+            "mfe_wr": round(ts["mfe_wins"] / n * 100, 1) if n > 0 else 0,
             "avg_return": round(sum(rets) / n, 2) if n > 0 else 0,
+            "avg_mfe": round(avg_mfe, 2),
             "pf": round(gains / losses, 2) if losses > 0 else (99.0 if gains > 0 else 0),
         }
 
@@ -213,6 +220,8 @@ async def get_backtest(
         "with_returns": len(with_returns),
         "wins": wins,
         "win_rate": round(wins / len(with_returns) * 100, 1) if with_returns else 0,
+        "mfe_wins": mfe_wins,
+        "mfe_wr": round(mfe_wins / len(with_returns) * 100, 1) if with_returns else 0,
         "avg_return": round(total_return / len(with_returns), 2) if with_returns else 0,
         "by_type": by_type,
     }

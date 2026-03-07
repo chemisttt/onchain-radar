@@ -284,10 +284,18 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
             </span>
             {stats.with_returns > 0 && (
               <>
-                <span className="text-[#555]">Win rate:</span>
+                <span className="text-[#555]">WR:</span>
                 <span className={stats.win_rate >= 50 ? 'text-green' : 'text-red'}>
                   {stats.win_rate}%
                 </span>
+                {stats.mfe_wr != null && (
+                  <>
+                    <span className="text-[#555]">MFE:</span>
+                    <span className={stats.mfe_wr >= 60 ? 'text-green' : stats.mfe_wr >= 40 ? 'text-yellow' : 'text-red'}>
+                      {stats.mfe_wr}%
+                    </span>
+                  </>
+                )}
                 <span className="text-[#555]">Avg:</span>
                 <span className={stats.avg_return >= 0 ? 'text-green' : 'text-red'}>
                   {stats.avg_return > 0 ? '+' : ''}{stats.avg_return}%
@@ -314,6 +322,9 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
               <span className="text-text-secondary">{TYPE_SHORT[type] || type}</span>
               {' '}{ts.count}x{' '}
               <span className={ts.win_rate >= 50 ? 'text-green' : 'text-red'}>{ts.win_rate}%</span>
+              {ts.mfe_wr != null && (
+                <>{' MFE:'}<span className={ts.mfe_wr >= 60 ? 'text-green' : ts.mfe_wr >= 40 ? 'text-yellow' : 'text-red'}>{ts.mfe_wr}%</span></>
+              )}
               {' '}
               <span className={ts.avg_return >= 0 ? 'text-green' : 'text-red'}>
                 {ts.avg_return > 0 ? '+' : ''}{ts.avg_return}%
@@ -357,8 +368,8 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                 const rawRet = a.return_7d ?? a.return_3d ?? a.return_1d ?? 0
                 const bestReturn = a.direction === 'long' ? rawRet : -rawRet
                 const hasReturn = a.return_7d != null || a.return_3d != null || a.return_1d != null
-                const stoppedOut = (a.mae_return ?? 0) > 5
-                const won = hasReturn && bestReturn > 0 && !stoppedOut
+                const won = hasReturn && bestReturn > 0
+                const mfeHit = (a.mfe_return ?? 0) >= 3
                 return (
                   <tr
                     key={i}
@@ -388,7 +399,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                     <td className={`px-2 py-1 text-right ${(a.mfe_return ?? 0) >= 0 ? 'text-green' : 'text-[#555]'}`}>
                       {a.mfe_return != null ? `+${a.mfe_return.toFixed(1)}%` : '-'}
                     </td>
-                    <td className="px-2 py-1 text-center">{hasReturn ? (won ? '\u2705' : '\u274C') : '-'}</td>
+                    <td className="px-2 py-1 text-center">{hasReturn ? (won ? '\u2705' : mfeHit ? '\u25C6' : '\u274C') : '-'}</td>
                     <td className="px-2 py-1 text-center flex gap-0.5 justify-center">
                       <span className={`text-[8px] px-1 py-0.5 rounded ${
                         a.simulated ? 'bg-[#1a1a1a] text-[#888]' : 'bg-[#22c55e22] text-green'

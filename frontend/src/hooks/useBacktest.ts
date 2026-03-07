@@ -41,8 +41,10 @@ export interface BacktestStats {
   with_returns: number
   wins: number
   win_rate: number
+  mfe_wins?: number
+  mfe_wr?: number
   avg_return: number
-  by_type?: Record<string, { count: number; win_rate: number; avg_return: number; pf: number }>
+  by_type?: Record<string, { count: number; win_rate: number; mfe_wr?: number; avg_return: number; avg_mfe?: number; pf: number }>
 }
 
 export interface PriceStructure {
