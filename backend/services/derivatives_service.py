@@ -227,36 +227,23 @@ async def _fetch_bitget_oi(session: aiohttp.ClientSession) -> dict[str, dict]:
 
 # ── Liquidations ─────────────────────────────────────────────────────
 
-async def _fetch_liquidations(session: aiohttp.ClientSession) -> dict[str, dict]:
-    """Fetch taker buy/sell volume from Binance as liquidation proxy.
-    allForceOrders is deprecated — use takerlongshortRatio instead.
-    buyVol = aggressive longs (proxy for long liquidation pressure when falling),
-    sellVol = aggressive shorts (proxy for short liquidation pressure when rising).
-    Delta = buyVol - sellVol → positive = net long aggression.
-    """
-    result: dict[str, dict] = {}
-    try:
-        for sym in SYMBOLS:
-            try:
-                async with session.get(
-                    "https://fapi.binance.com/futures/data/takerlongshortRatio",
-                    params={"symbol": sym, "period": "1d", "limit": 1},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status != 200:
-                        continue
-                    data = await resp.json()
-                if data:
-                    item = data[0]
-                    buy_vol = float(item.get("buyVol", 0) or 0)
-                    sell_vol = float(item.get("sellVol", 0) or 0)
-                    result[sym] = {"long": buy_vol, "short": sell_vol}
-            except Exception:
-                continue
-            await asyncio.sleep(0.05)
-    except Exception as e:
-        log.warning(f"Taker ratio fetch error: {e}")
-    return result
+async def _fetch_liquidations(session: aiohttp.ClientSession | None = None) -> dict[str, dict]:
+    """Aggregate real WS liquidation events from liquidation_events table for today.
+    Returns per-symbol {long: usd, short: usd} from actual forced liquidations."""
+    db = get_db()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Start of today in ms
+    today_start = int(datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    rows = await db.execute_fetchall(
+        """SELECT symbol,
+                  SUM(CASE WHEN side='long' THEN usd_value ELSE 0 END) as liq_long,
+                  SUM(CASE WHEN side='short' THEN usd_value ELSE 0 END) as liq_short
+           FROM liquidation_events
+           WHERE timestamp >= ?
+           GROUP BY symbol""",
+        (today_start,),
+    )
+    return {r["symbol"]: {"long": r["liq_long"] or 0, "short": r["liq_short"] or 0} for r in rows}
 
 
 # ── Funding (from existing service) ─────────────────────────────────
