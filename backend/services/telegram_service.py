@@ -31,6 +31,11 @@ TELEGRAM_MIN_TIER = "SIGNAL"
 TIER_PRIORITY = {"SETUP": 0, "SIGNAL": 1, "TRIGGER": 2}
 INITIAL_DELAY = 30  # wait for services to warm up
 
+# Top symbols by OI — get frequent alerts (SIGNAL+)
+# All other alts: only TRIGGER or extreme price moves (>=20%)
+TOP_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+ALT_MIN_PRICE_CHANGE = 20.0  # % — threshold for alts to bypass TRIGGER requirement
+
 # State
 _last_digest_date: str = ""
 _alert_cooldowns: dict[str, float] = {}  # key → timestamp of last fire
@@ -146,6 +151,13 @@ async def _poll_loop():
                         # Skip low-quality alerts
                         if TIER_PRIORITY.get(tier, 0) < TIER_PRIORITY.get(TELEGRAM_MIN_TIER, 1):
                             continue
+
+                        # Alts (non-top): only TRIGGER or extreme price moves
+                        sym = alert.get("symbol", "")
+                        if sym and sym not in TOP_SYMBOLS and sym != "GLOBAL":
+                            price_chg = abs(alert.get("price_change_pct", 0))
+                            if tier != "TRIGGER" and price_chg < ALT_MIN_PRICE_CHANGE:
+                                continue
 
                         cooldown = ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
                         if now_ts - _alert_cooldowns.get(key, 0) < cooldown:

@@ -391,6 +391,8 @@ def _build_directional_alert(
 
     return {
         "key": f"{key}:{sym}",
+        "symbol": sym,
+        "price_change_pct": price_chg,
         "tier": tier,
         "confluence": confluence,
         "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} {title_suffix}",
@@ -584,6 +586,8 @@ async def check_alerts() -> list[dict]:
 
                     alerts.append({
                         "key": f"liq_proximity:{sym}:{direction}:{leverage}x",
+                        "symbol": sym,
+                        "price_change_pct": price_chg,
                         "tier": tier,
                         "confluence": confluence,
                         "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
@@ -620,6 +624,8 @@ async def check_alerts() -> list[dict]:
 
                 alerts.append({
                     "key": f"ob_divergence:{sym}",
+                    "symbol": sym,
+                    "price_change_pct": price_chg,
                     "tier": tier,
                     "confluence": ob_confluence,
                     "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} OB DIVERGENCE — {trap_type}",
@@ -715,6 +721,8 @@ def _check_regime_transition(current: dict[str, dict]) -> dict | None:
 
             return {
                 "key": "regime_transition",
+                "symbol": "GLOBAL",
+                "price_change_pct": 0,
                 "tier": tier,
                 "confluence": 6,
                 "title": f"{TIER_EMOJI[tier]} {tier} | REGIME SHIFT: {prev_label} → {cur_label}",
@@ -770,6 +778,8 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                 tier = TIER_SIGNAL
                 alerts.append({
                     "key": f"vol_compression:{sym}",
+                    "symbol": sym,
+                    "price_change_pct": sym_data.get("price_change_24h_pct", 0),
                     "tier": tier,
                     "confluence": 4,
                     "title": f"{TIER_EMOJI[tier]} {tier} | {short_name} VOL COMPRESSION — IV {iv:.0f}% + RV {rv:.0f}%",
@@ -800,6 +810,8 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                     conf = 7 if tier == TIER_TRIGGER else 5
                     alerts.append({
                         "key": f"vol_panic:{sym}",
+                        "symbol": sym,
+                        "price_change_pct": sym_data.get("price_change_24h_pct", 0),
                         "tier": tier,
                         "confluence": conf,
                         "title": f"{TIER_EMOJI[tier]} {tier} | {short_name} ПАНИКА — VRP_z {vrp_z:+.1f} + Skew_z {skew_z:+.1f}",
@@ -826,6 +838,8 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                     conf = 7 if tier == TIER_TRIGGER else 5
                     alerts.append({
                         "key": f"vol_euphoria:{sym}",
+                        "symbol": sym,
+                        "price_change_pct": sym_data.get("price_change_24h_pct", 0),
                         "tier": tier,
                         "confluence": conf,
                         "title": f"{TIER_EMOJI[tier]} {tier} | {short_name} ЭЙФОРИЯ — VRP_z {vrp_z:+.1f} + Skew_z {skew_z:+.1f}",
