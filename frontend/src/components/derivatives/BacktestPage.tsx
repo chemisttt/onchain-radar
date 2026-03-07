@@ -53,13 +53,19 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const entryLineRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> | null>(null)
 
   const scrollToAlert = useCallback((alert: BacktestAlert) => {
     const chart = chartRef.current
     const series = candleSeriesRef.current
     if (!chart || !series) return
 
-    series.createPriceLine({
+    // Remove previous entry line
+    if (entryLineRef.current) {
+      series.removePriceLine(entryLineRef.current)
+    }
+
+    entryLineRef.current = series.createPriceLine({
       price: alert.entry_price,
       color: alert.direction === 'long' ? '#22c55e' : '#ef4444',
       lineWidth: 1,
