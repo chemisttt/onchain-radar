@@ -26,6 +26,7 @@ export interface BacktestAlert {
   return_7d: number | null
   mfe_return?: number | null
   mfe_price?: number | null
+  mae_return?: number | null
   simulated?: boolean
   zscores?: { oi: number; funding: number; liq: number; volume: number }
 }

@@ -28,6 +28,10 @@ const TYPE_SHORT: Record<string, string> = {
   fund_reversal: 'F\u21BB',
   vol_expansion: 'V\u2197',
   oi_flush_vol: 'OI\u2193V',
+  fund_spike: 'F\u2191',
+  distribution: 'DIST',
+  overextension: 'OVX',
+  oi_buildup_stall: 'OI\u2197\u23F8',
 }
 
 function computeEma(closes: number[], period: number): (number | null)[] {
@@ -322,11 +326,11 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
             </thead>
             <tbody>
               {data.alerts.map((a, i) => {
-                const bestReturn = a.direction === 'long'
-                  ? (a.return_7d ?? a.return_3d ?? a.return_1d ?? 0)
-                  : -(a.return_7d ?? a.return_3d ?? a.return_1d ?? 0)
+                const rawRet = a.return_7d ?? a.return_3d ?? a.return_1d ?? 0
+                const bestReturn = a.direction === 'long' ? rawRet : -rawRet
                 const hasReturn = a.return_7d != null || a.return_3d != null || a.return_1d != null
-                const won = hasReturn && bestReturn > 0
+                const stoppedOut = (a.mae_return ?? 0) > 5
+                const won = hasReturn && bestReturn > 0 && !stoppedOut
                 return (
                   <tr
                     key={i}

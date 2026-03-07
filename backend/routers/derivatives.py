@@ -131,7 +131,9 @@ async def get_backtest(
     all_alerts = real_alerts + simulated
     all_alerts.sort(key=lambda a: a["time"])
 
-    # Stats helper
+    # Stats helper — MAE > 5% means you got stopped out, it's a loss
+    MAE_STOP = 5.0  # max adverse excursion threshold (%)
+
     def _directional_return(a: dict) -> float | None:
         ret = a.get("return_7d") or a.get("return_3d") or a.get("return_1d")
         if ret is None:
@@ -140,14 +142,19 @@ async def get_backtest(
             ret = -ret
         return ret
 
+    def _is_win(a: dict) -> bool:
+        """Win = positive return AND didn't get stopped out by MAE."""
+        ret = _directional_return(a)
+        if ret is None or ret <= 0:
+            return False
+        mae = a.get("mae_return")
+        if mae is not None and mae > MAE_STOP:
+            return False  # stopped out — can't count as win
+        return True
+
     with_returns = [a for a in all_alerts if _directional_return(a) is not None]
-    wins = 0
-    total_return = 0.0
-    for a in with_returns:
-        ret = _directional_return(a) or 0
-        if ret > 0:
-            wins += 1
-        total_return += ret
+    wins = sum(1 for a in with_returns if _is_win(a))
+    total_return = sum(_directional_return(a) or 0 for a in with_returns)
 
     # Per-type breakdown
     type_stats: dict[str, dict] = {}
@@ -159,7 +166,7 @@ async def get_backtest(
         ret = _directional_return(a)
         if ret is not None:
             type_stats[t]["returns"].append(ret)
-            if ret > 0:
+            if _is_win(a):
                 type_stats[t]["wins"] += 1
 
     by_type = {}
