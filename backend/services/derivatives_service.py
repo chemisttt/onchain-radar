@@ -698,10 +698,11 @@ async def _backfill_4h():
     db = get_db()
 
     # Check if we already have enough 4h data
-    cnt = await db.execute_fetchone(
+    rows = await db.execute_fetchall(
         "SELECT COUNT(*) as c FROM derivatives_4h"
     )
-    if cnt and cnt["c"] > 1000:
+    cnt = rows[0]["c"] if rows else 0
+    if cnt > 1000:
         log.info("4h backfill skipped: already have data")
         return
 
