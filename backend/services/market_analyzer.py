@@ -384,8 +384,8 @@ async def check_alerts() -> list[dict]:
         composite = (oi_z + fund_z + liq_z) / 3
 
         # ── 1. OVERHEAT: OI extreme + funding extreme same direction
-        # metrics-guide §3 scenario 4 + §4: OI_z > +2 + Fund_z > +1.5 → cascade risk
-        if oi_z > 2 and fund_z > 1.5:
+        # metrics-guide §3 scenario 4 + §4: OI_z > +4 + Fund_z > +3 → cascade risk
+        if oi_z > 4 and fund_z > 3:
             alerts.append({
                 "key": f"overheat:{sym}",
                 "title": f"🔴 {short_sym} ПЕРЕГРЕВ — OI + Funding extreme",
@@ -410,7 +410,7 @@ async def check_alerts() -> list[dict]:
 
         # ── 2. CAPITULATION: OI washed + funding negative + liq cascade
         # metrics-guide §3 scenario 1+3, §5: post-flush entry
-        if oi_z < -1.5 and fund_z < -1.5:
+        if oi_z < -3 and fund_z < -3:
             alerts.append({
                 "key": f"capitulation:{sym}",
                 "title": f"🟢 {short_sym} КАПИТУЛЯЦИЯ — вымытость + шорты платят",
@@ -435,7 +435,7 @@ async def check_alerts() -> list[dict]:
 
         # ── 3. LIQUIDATION CASCADE + FLUSH
         # metrics-guide §5: liq_z > 2 + price drop + OI dropping = flush event
-        if liq_z > 2 and price_chg < -3 and oi_chg < -2:
+        if liq_z > 4 and price_chg < -6 and oi_chg < -4:
             alerts.append({
                 "key": f"liq_flush:{sym}",
                 "title": f"💥 {short_sym} LIQ FLUSH — каскад + OI сброс",
@@ -460,7 +460,7 @@ async def check_alerts() -> list[dict]:
 
         # ── 4. OI/PRICE DIVERGENCE (strong)
         # metrics-guide §3 scenario 2+3: significant OI vs price mismatch
-        if oi_chg > 7 and price_chg < -2:
+        if oi_chg > 14 and price_chg < -4:
             # OI growing + price falling → short squeeze building
             alerts.append({
                 "key": f"divergence_squeeze:{sym}",
@@ -481,7 +481,7 @@ async def check_alerts() -> list[dict]:
                     ],
                 ),
             })
-        elif oi_chg < -7 and price_chg > 3:
+        elif oi_chg < -14 and price_chg > 6:
             # OI falling + price rising → short covering rally, top close
             alerts.append({
                 "key": f"divergence_top:{sym}",
@@ -505,7 +505,7 @@ async def check_alerts() -> list[dict]:
 
         # ── 5. VOLUME BREAKOUT + подтверждение
         # metrics-guide §6: vol_z > 2 + другой z > 1.5 = настоящий breakout
-        if vol_z > 2 and (abs(oi_z) > 1.5 or abs(fund_z) > 1.5):
+        if vol_z > 4 and (abs(oi_z) > 3 or abs(fund_z) > 3):
             direction = "LONG" if price_chg > 0 else "SHORT" if price_chg < 0 else "НЕОПР"
             alerts.append({
                 "key": f"vol_breakout_confirmed:{sym}",
@@ -516,7 +516,7 @@ async def check_alerts() -> list[dict]:
                         f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
                     ],
                     indicators=[
-                        f"Volume extreme + {'OI' if abs(oi_z) > 1.5 else 'Funding'} подтверждает",
+                        f"Volume extreme + {'OI' if abs(oi_z) > 3 else 'Funding'} подтверждает",
                         f"{'Breakout direction: {}'.format(direction)}",
                         f"{'Кульминация покупок — осторожно' if price_chg > 5 and fund_z > 1.5 else 'Breakout может продолжиться' if abs(price_chg) > 2 else 'Volume без цены — накопление/распределение'}",
                     ],
@@ -625,8 +625,8 @@ async def check_alerts() -> list[dict]:
                 })
 
             # VRP extreme + skew alignment = panic or euphoria
-            if abs(vrp_z) > 2 and abs(skew_z) > 1:
-                if vrp_z > 2 and skew_z > 1:
+            if abs(vrp_z) > 4 and abs(skew_z) > 2:
+                if vrp_z > 4 and skew_z > 2:
                     # Panic: puts expensive + vol rich = panic hedging
                     alerts.append({
                         "key": f"vol_panic:{sym}",
@@ -647,7 +647,7 @@ async def check_alerts() -> list[dict]:
                             ],
                         ),
                     })
-                elif vrp_z < -2 and skew_z < -1:
+                elif vrp_z < -4 and skew_z < -2:
                     # Euphoria: calls expensive + vol cheap = complacency
                     alerts.append({
                         "key": f"vol_euphoria:{sym}",
