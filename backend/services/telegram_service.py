@@ -29,7 +29,7 @@ ALERT_COOLDOWNS = {
 DEFAULT_COOLDOWN = 7200  # fallback 2 hours
 # SETUP tier is too noisy for Telegram — only send SIGNAL and TRIGGER
 TELEGRAM_MIN_TIER = "SIGNAL"
-TIER_PRIORITY = {"SETUP": 0, "SIGNAL": 1, "TRIGGER": 2}
+TIER_PRIORITY = {"SETUP": 0, "INFO": 1, "SIGNAL": 1, "TRIGGER": 2}
 INITIAL_DELAY = 30  # wait for services to warm up
 
 # Top symbols by OI — get frequent alerts (SIGNAL+)
