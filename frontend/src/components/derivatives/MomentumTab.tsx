@@ -302,7 +302,7 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
                   labelFormatter={fmtDateLabel}
                   separator=": "
                   formatter={(v: any) => [`${Number(v)?.toFixed(1)}%`, 'VRP']}
-                  cursor={{ stroke: '#333', strokeWidth: 1 }}
+                  cursor={{ fill: 'transparent' }}
                 />
                 <ReferenceLine y={0} stroke="#333" />
                 <Bar dataKey="vrp" maxBarSize={3}>
@@ -400,7 +400,7 @@ export default function MomentumTab({ symbol }: MomentumTabProps) {
                   labelFormatter={fmtDateLabel}
                   separator=": "
                   formatter={(v: any) => [Number(v)?.toFixed(2), 'Skew Z']}
-                  cursor={{ stroke: '#333', strokeWidth: 1 }}
+                  cursor={{ fill: 'transparent' }}
                 />
                 <ReferenceLine y={0} stroke="#333" />
                 <ReferenceLine y={2} stroke="#2a2a2a" strokeDasharray="4 4" />

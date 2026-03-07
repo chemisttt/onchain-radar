@@ -329,6 +329,7 @@ export default function GlobalDashboard() {
                 contentStyle={{ backgroundColor: '#222', border: '1px solid #444', fontSize: 11, color: '#e2e8f0' }} itemStyle={{ color: '#e2e8f0' }}
                 formatter={(v: any) => [fmtUsd(Number(v)), 'Liq Delta']}
                 separator=": "
+                cursor={{ fill: 'transparent' }}
               labelFormatter={(v: any) => {
                 const d = new Date(v)
                 return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })

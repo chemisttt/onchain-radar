@@ -82,7 +82,7 @@ export default function MetricChart({
     },
     separator: ': ',
     formatter: (value: any) => [fmt(Number(value)), label || dataKey] as [string, string],
-    cursor: { stroke: '#333', strokeWidth: 1 },
+    cursor: chartType === 'bar' ? { fill: 'transparent' } : { stroke: '#333', strokeWidth: 1 },
   }
 
   const renderChart = () => {

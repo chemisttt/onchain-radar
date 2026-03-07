@@ -232,7 +232,7 @@ export default function MomentumPage({ symbol }: MomentumPageProps) {
                   <XAxis dataKey="date" tickFormatter={fmtDate} {...AXIS} minTickGap={40} />
                   <YAxis {...AXIS} domain={[-1, 1]} tickFormatter={(v: number) => v.toFixed(1)} width={32} />
                   <ReferenceLine y={0} stroke="#333" />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={fmtDateLabel} formatter={(v: any) => [Number(v)?.toFixed(3), 'DI']} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={fmtDateLabel} formatter={(v: any) => [Number(v)?.toFixed(3), 'DI']} cursor={{ fill: 'transparent' }} />
                   <Bar dataKey="di" maxBarSize={2}>
                     {data.history.map((entry, i) => (
                       <Cell key={i} fill={(entry.di ?? 0) >= 0 ? '#22c55e' : '#ef4444'} fillOpacity={0.7} />
