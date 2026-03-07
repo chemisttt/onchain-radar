@@ -563,45 +563,46 @@ async def check_alerts() -> list[dict]:
         # ── STRUCTURAL ALERTS ────────────────────────────────
 
         # 5. LIQ PROXIMITY — alert each cluster separately (cascade-friendly)
-        for cluster in liq_clusters:
-            prox_confluence = max(confluence, CONFLUENCE_SIGNAL)
-            tier = _score_to_tier(prox_confluence)
-            if not tier:
-                continue
-            direction = cluster["direction"]
-            dist = cluster["distance_pct"]
-            lev_price = cluster["level_price"]
-            leverage = cluster["leverage"]
-            vol = cluster["volume_usd"]
+        #    Only fire when actual confluence >= SIGNAL (extreme z-scores present).
+        #    Without this guard, every symbol fires liq alerts → Telegram flood.
+        if confluence >= CONFLUENCE_SIGNAL and liq_clusters:
+            tier = _score_to_tier(confluence)
+            if tier:
+                for cluster in liq_clusters:
+                    direction = cluster["direction"]
+                    dist = cluster["distance_pct"]
+                    lev_price = cluster["level_price"]
+                    leverage = cluster["leverage"]
+                    vol = cluster["volume_usd"]
 
-            what_we_see = [
-                f"Liq cluster: {_fmt_price(lev_price)} ({leverage}x {direction}s, -{dist:.1f}%)",
-                f"Estimated volume at level: {_fmt_usd(vol)}",
-                f"Price: {_fmt_price(price)} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
-            ]
-            what_we_see.extend(_velocity_context_lines(velocities))
+                    what_we_see = [
+                        f"Liq cluster: {_fmt_price(lev_price)} ({leverage}x {direction}s, -{dist:.1f}%)",
+                        f"Estimated volume at level: {_fmt_usd(vol)}",
+                        f"Price: {_fmt_price(price)} | OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
+                    ]
+                    what_we_see.extend(_velocity_context_lines(velocities))
 
-            alerts.append({
-                "key": f"liq_proximity:{sym}:{direction}:{leverage}x",
-                "tier": tier,
-                "confluence": prox_confluence,
-                "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
-                "body": _format_alert_body(
-                    what_we_see,
-                    indicators=[
-                        f"{'Каскадные ликвидации лонгов ниже ' + _fmt_price(lev_price) if direction == 'long' else 'Short squeeze выше ' + _fmt_price(lev_price)}",
-                        f"Leverage {leverage}x → ликвидация при движении {100/leverage:.0f}% от входа",
-                        f"Confluence: {prox_confluence} ({', '.join(factors[:3])})",
-                    ],
-                    action=[
-                        f"{'Ждать bounce у/рядом ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ' + _fmt_price(lev_price)}",
-                        f"{'Ставить биды чуть ниже liq level' if direction == 'long' else 'Тайтить стопы выше liq level'}",
-                        "Мониторить real-time liqs для подтверждения каскада",
-                    ],
-                    tier=tier,
-                    confluence=prox_confluence,
-                ),
-            })
+                    alerts.append({
+                        "key": f"liq_proximity:{sym}:{direction}:{leverage}x",
+                        "tier": tier,
+                        "confluence": confluence,
+                        "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} LIQ PROXIMITY — {leverage}x {direction} cluster {_fmt_price(lev_price)} ({_fmt_usd(vol)})",
+                        "body": _format_alert_body(
+                            what_we_see,
+                            indicators=[
+                                f"{'Каскадные ликвидации лонгов ниже ' + _fmt_price(lev_price) if direction == 'long' else 'Short squeeze выше ' + _fmt_price(lev_price)}",
+                                f"Leverage {leverage}x → ликвидация при движении {100/leverage:.0f}% от входа",
+                                f"Confluence: {confluence} ({', '.join(factors[:3])})",
+                            ],
+                            action=[
+                                f"{'Ждать bounce у/рядом ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ' + _fmt_price(lev_price)}",
+                                f"{'Ставить биды чуть ниже liq level' if direction == 'long' else 'Тайтить стопы выше liq level'}",
+                                "Мониторить real-time liqs для подтверждения каскада",
+                            ],
+                            tier=tier,
+                            confluence=confluence,
+                        ),
+                    })
 
         # 6. OB DIVERGENCE
         if _is_ob_divergence(price_chg, ob_skew, ob_skew_z):

@@ -60,6 +60,12 @@ async def _send_message(text: str, session: aiohttp.ClientSession) -> bool:
             url, json=payload,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
+            if resp.status == 429:
+                body = await resp.json()
+                retry = body.get("parameters", {}).get("retry_after", 30)
+                log.warning(f"Telegram 429 — backing off {retry}s")
+                await asyncio.sleep(retry)
+                return False
             if resp.status != 200:
                 body = await resp.text()
                 log.warning(f"Telegram send failed ({resp.status}): {body[:200]}")
@@ -126,7 +132,14 @@ async def _poll_loop():
                     alerts = await market_analyzer.check_alerts()
                     now_ts = time.time()
 
+                    sent_count = 0
+                    MAX_PER_CYCLE = 5  # prevent Telegram flood
+
                     for alert in alerts:
+                        if sent_count >= MAX_PER_CYCLE:
+                            log.info(f"Cycle cap reached ({MAX_PER_CYCLE}), deferring remaining alerts")
+                            break
+
                         key = alert["key"]
                         tier = alert.get("tier", "")
 
@@ -142,8 +155,9 @@ async def _poll_loop():
                         sent = await _send_message(text, session)
                         if sent:
                             _alert_cooldowns[key] = now_ts
+                            sent_count += 1
                             log.info(f"Alert sent: {key}")
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.5)
 
                 except Exception as e:
                     log.error(f"Alert check error: {e}")
