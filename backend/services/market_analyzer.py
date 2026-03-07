@@ -387,7 +387,7 @@ def _build_directional_alert(
     if ob_line:
         what_we_see.append(ob_line)
 
-    indicators.append(f"Confluence: {confluence} ({', '.join(factors[:3])})")
+    indicators.append(f"Совпадение факторов: {confluence} ({', '.join(factors[:3])})")
 
     return {
         "key": f"{key}:{sym}",
@@ -485,8 +485,8 @@ async def check_alerts() -> list[dict]:
                     ],
                     action=[
                         "НЕ открывать новые лонги",
-                        "Готовить шорт на наклонной сверху",
-                        "Ждать разгрузку OI (drop > 5%) для re-entry long",
+                        "Готовить шорт от верхней трендовой / сопротивления",
+                        "Ждать сброс OI (> 5%) для повторного входа в лонг",
                     ],
                 ))
 
@@ -499,12 +499,12 @@ async def check_alerts() -> list[dict]:
                     cur, velocities, confluence, tier, factors,
                     indicators=[
                         "OI вымыт + шорты платят фандинг = слабые руки вышли",
-                        "Зона накопления — high-probability long",
+                        "Зона накопления — высокая вероятность лонга",
                     ],
                     action=[
-                        "Искать лонг на зонах интереса / наклонных снизу",
+                        "Искать лонг от зон поддержки / нижней трендовой",
                         "Подтверждение: OI начинает расти с текущих",
-                        "Stop под ближайший liq cluster",
+                        "Стоп под ближайший кластер ликвидаций",
                     ],
                 ))
 
@@ -524,7 +524,7 @@ async def check_alerts() -> list[dict]:
                     ],
                     action=[
                         "НЕ ловить нож — тренд вниз подтверждён",
-                        "Шорт при откате к resistance / наклонной сверху",
+                        "Шорт при откате к сопротивлению / верхней трендовой",
                     ],
                 ))
         elif oi_chg < -8 and price_chg > 4:
@@ -539,7 +539,7 @@ async def check_alerts() -> list[dict]:
                     ],
                     action=[
                         "НЕ добавлять лонги на текущих уровнях",
-                        "Искать шорт при касании наклонной сверху",
+                        "Искать шорт от сопротивления / верхней трендовой",
                     ],
                 ))
 
@@ -551,12 +551,12 @@ async def check_alerts() -> list[dict]:
                     "liq_flush", sym, short_sym, "LIQ FLUSH — каскад + OI сброс",
                     cur, velocities, confluence, tier, factors,
                     indicators=[
-                        "Каскадные ликвидации + слив OI = flush event",
+                        "Каскадные ликвидации + слив OI = массовый сброс",
                         "Слабые лонги ликвидированы, рынок очищается",
-                        "После flush — bounce вероятен (mean reversion)",
+                        "После сброса — отскок вероятен (возврат к среднему)",
                     ],
                     action=[
-                        "НЕ шортить на лоях — flush уже произошёл",
+                        "НЕ шортить на минимумах — сброс уже произошёл",
                         "Ждать стабилизацию (1-2 свечи), затем лонг",
                         f"{'Funding отрицательный — подтверждает flush' if fund_z < 0 else 'Funding ещё положительный — flush может продолжиться'}",
                     ],
@@ -594,14 +594,14 @@ async def check_alerts() -> list[dict]:
                         "body": _format_alert_body(
                             what_we_see,
                             indicators=[
-                                f"{'Каскадные ликвидации лонгов ниже ' + _fmt_price(lev_price) if direction == 'long' else 'Short squeeze выше ' + _fmt_price(lev_price)}",
-                                f"Leverage {leverage}x → ликвидация при движении {100/leverage:.0f}% от входа",
-                                f"Confluence: {confluence} ({', '.join(factors[:3])})",
+                                f"{'Каскадные ликвидации лонгов ниже ' + _fmt_price(lev_price) if direction == 'long' else 'Сквиз шортов выше ' + _fmt_price(lev_price)}",
+                                f"Плечо {leverage}x → ликвидация при движении {100/leverage:.0f}% от входа",
+                                f"Совпадение факторов: {confluence} ({', '.join(factors[:3])})",
                             ],
                             action=[
-                                f"{'Ждать bounce у/рядом ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать rejection у/рядом ' + _fmt_price(lev_price)}",
-                                f"{'Ставить биды чуть ниже liq level' if direction == 'long' else 'Тайтить стопы выше liq level'}",
-                                "Мониторить real-time liqs для подтверждения каскада",
+                                f"{'Ждать отскок от уровня ' + _fmt_price(lev_price) if direction == 'long' else 'Ждать отбой от уровня ' + _fmt_price(lev_price)}",
+                                f"{'Выставить лимитки чуть ниже уровня ликвидаций' if direction == 'long' else 'Подтянуть стопы выше уровня ликвидаций'}",
+                                "Следить за ликвидациями в реальном времени",
                             ],
                             tier=tier,
                             confluence=confluence,
@@ -614,13 +614,13 @@ async def check_alerts() -> list[dict]:
             tier = _score_to_tier(ob_confluence)
             if tier:
                 if price_chg > 0 and ob_skew < 0:
-                    trap_type = "BULL TRAP risk"
-                    detail = "Цена растёт, но asks доминируют в OB"
+                    trap_type = "ЛОВУШКА ДЛЯ ПОКУПАТЕЛЕЙ"
+                    detail = "Цена растёт, но продавцы доминируют в стакане"
                     action_text = "Сокращать лонги, готовить шорт"
                 else:
-                    trap_type = "BEAR TRAP / absorption"
-                    detail = "Цена падает, но bids доминируют в OB"
-                    action_text = "Ждать bounce, не добавлять шорты"
+                    trap_type = "ЛОВУШКА ДЛЯ ПРОДАВЦОВ"
+                    detail = "Цена падает, но покупатели доминируют в стакане"
+                    action_text = "Ждать отскок, не добавлять шорты"
 
                 alerts.append({
                     "key": f"ob_divergence:{sym}",
@@ -637,13 +637,13 @@ async def check_alerts() -> list[dict]:
                             f"OI_z: {oi_z:+.1f} | Fund_z: {fund_z:+.1f}",
                         ],
                         indicators=[
-                            f"{'Asks доминируют при росте — продавцы абсорбируют' if price_chg > 0 else 'Bids доминируют при падении — покупатели абсорбируют'}",
-                            "OB divergence ловит фейковые движения до разворота",
-                            f"Confluence: {ob_confluence} ({', '.join(factors[:3])})",
+                            f"{'Продавцы доминируют в стакане при росте цены' if price_chg > 0 else 'Покупатели доминируют в стакане при падении цены'}",
+                            "Расхождение стакана с ценой ловит фейковые движения до разворота",
+                            f"Совпадение факторов: {ob_confluence} ({', '.join(factors[:3])})",
                         ],
                         action=[
                             action_text,
-                            "Ждать выравнивания OB skew с ценой для подтверждения тренда",
+                            "Ждать пока стакан сойдётся с направлением цены",
                         ],
                         tier=tier,
                         confluence=ob_confluence,
@@ -661,13 +661,13 @@ async def check_alerts() -> list[dict]:
                     "vol_anomaly", sym, short_sym, f"VOLUME ANOMALY — breakout {direction}",
                     cur, velocities, confluence, tier, factors,
                     indicators=[
-                        f"Volume extreme (z: {vol_z:+.1f}) + {'OI' if abs(oi_z) > 1.5 else 'Funding'} подтверждает",
-                        f"Breakout direction: {direction}",
-                        f"{'Кульминация покупок — осторожно' if price_chg > 5 and fund_z > 1.5 else 'Breakout может продолжиться' if abs(price_chg) > 2 else 'Volume без цены — накопление/распределение'}",
+                        f"Аномальный объём (z: {vol_z:+.1f}) + {'OI' if abs(oi_z) > 1.5 else 'фандинг'} подтверждает",
+                        f"Направление: {direction}",
+                        f"{'Кульминация покупок — осторожно' if price_chg > 5 and fund_z > 1.5 else 'Пробой может продолжиться' if abs(price_chg) > 2 else 'Объём без движения цены — накопление/распределение'}",
                     ],
                     action=[
                         f"Торговать {'лонг' if price_chg > 0 else 'шорт' if price_chg < 0 else 'по направлению'} при пробое уровня",
-                        "Проверить liq map для TP уровней",
+                        "Проверить карту ликвидаций для целей по прибыли",
                     ],
                 ))
 
@@ -733,11 +733,11 @@ def _check_regime_transition(current: dict[str, dict]) -> dict | None:
                     ],
                     indicators=[
                         f"{'Рынок ПЕРЕГРЕТ — метрики в красной зоне' if cur_c > 1.5 else 'Рынок ВЫМЫТ — метрики в зелёной зоне' if cur_c < -1.5 else 'Переход между зонами'}",
-                        f"{'Risk-off: сокращать экспозицию' if cur_c > 1.5 else 'Risk-on: наращивать экспозицию' if cur_c < -1.5 else 'Ждать подтверждения'}",
+                        f"{'Сокращать позиции, не набирать новые' if cur_c > 1.5 else 'Наращивать позиции от поддержек' if cur_c < -1.5 else 'Ждать подтверждения'}",
                     ],
                     action=[
-                        f"{'Не открывать новые лонги, искать шорт-сетапы' if cur_c > 1.5 else 'Искать лонг-сетапы на зонах интереса' if cur_c < -1.5 else 'Наблюдать за развитием'}",
-                        "Проверить Global Dashboard для полной картины",
+                        f"{'Не открывать новые лонги, искать шорт' if cur_c > 1.5 else 'Искать лонг от зон поддержки' if cur_c < -1.5 else 'Наблюдать за развитием'}",
+                        "Проверить общую картину на дашборде",
                     ],
                     tier=tier,
                     confluence=6,
@@ -791,12 +791,12 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                         ],
                         indicators=[
                             f"IV {iv:.0f}% — ниже исторических норм",
-                            "Breakout imminent — направление определят метрики",
-                            f"{'Skew puts > calls — рынок боится падения' if skew_z > 1 else 'Skew neutral' if abs(skew_z) < 1 else 'Skew calls > puts — рынок ждёт роста'}",
+                            "Резкое движение назревает — направление определят метрики",
+                            f"{'Путы дороже коллов — рынок боится падения' if skew_z > 1 else 'Перекос нейтральный' if abs(skew_z) < 1 else 'Коллы дороже путов — рынок ждёт роста'}",
                         ],
                         action=[
-                            "Покупать волатильность (long straddle/strangle)",
-                            "Уменьшить размер позиций — breakout в любую сторону",
+                            "Покупать волатильность (стрэддл/стрэнгл)",
+                            "Уменьшить размер позиций — резкое движение в любую сторону",
                         ],
                         tier=tier,
                         confluence=4,
@@ -822,12 +822,12 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                                 f"OI_z: {sym_data.get('oi_z', 0):+.1f} | Fund_z: {sym_data.get('funding_z', 0):+.1f}",
                             ],
                             indicators=[
-                                "Rich Vol + путы переоценены = панический хедж",
-                                "Исторически — contrarian long opportunity",
+                                "Волатильность дорогая + путы переоценены = панический хедж",
+                                "Исторически — возможность для лонга против толпы",
                             ],
                             action=[
-                                "Искать лонг на зоне интереса (contrarian)",
-                                "Sell vol: продавать путы / strangles",
+                                "Искать лонг от зон поддержки (против толпы)",
+                                "Продавать волатильность: путы / стрэнглы",
                             ],
                             tier=tier,
                             confluence=conf,
@@ -850,12 +850,12 @@ async def _check_vol_regime(current: dict[str, dict]) -> list[dict]:
                                 f"OI_z: {sym_data.get('oi_z', 0):+.1f} | Fund_z: {sym_data.get('funding_z', 0):+.1f}",
                             ],
                             indicators=[
-                                "Cheap Vol + коллы переоценены = эйфория",
-                                "Buy vol: breakout/коррекция вероятны",
+                                "Волатильность дешёвая + коллы переоценены = эйфория",
+                                "Пробой или коррекция вероятны",
                             ],
                             action=[
-                                "Искать шорт на наклонной сверху",
-                                "Buy vol: покупать путы / straddles",
+                                "Искать шорт от сопротивления / верхней трендовой",
+                                "Покупать волатильность: путы / стрэддлы",
                             ],
                             tier=tier,
                             confluence=conf,
