@@ -83,7 +83,8 @@ async def get_backtest(
         for r in reversed(rows)
     ]
 
-    # Real alerts from alert_tracking
+    # Real alerts from alert_tracking (exclude structural-only types)
+    _EXCLUDED_REAL = {"liq_proximity", "ob_divergence"}
     min_ts = candles[0]["time"] if candles else 0
     alert_rows = await db.execute_fetchall(
         """SELECT alert_type, symbol, tier, confluence, fired_at,
@@ -96,14 +97,35 @@ async def get_backtest(
         (symbol, min_ts),
     )
     real_alerts = []
+    # Dedup: keep strongest per family per 4h candle
+    _seen_real: set[str] = set()
+    _FAMILY_MAP = {
+        "divergence_squeeze": "div_squeeze",
+        "div_squeeze_3d": "div_squeeze",
+        "div_squeeze_5d": "div_squeeze",
+        "divergence_top": "div_top",
+        "div_top_3d": "div_top",
+        "div_top_5d": "div_top",
+        "liq_flush": "liq_flush",
+        "liq_flush_3d": "liq_flush",
+    }
     for a in alert_rows:
+        atype = a["alert_type"]
+        if atype in _EXCLUDED_REAL:
+            continue
         from datetime import datetime as _dt
         fired_dt = _dt.fromisoformat(a["fired_at"])
         fired_ts = int(fired_dt.timestamp())
         snapped = (fired_ts // 14400) * 14400
+        # Dedup by family per 4h candle
+        family = _FAMILY_MAP.get(atype, atype)
+        dedup_key = f"{family}:{snapped}:{a['expected_direction']}"
+        if dedup_key in _seen_real:
+            continue
+        _seen_real.add(dedup_key)
         real_alerts.append({
             "time": snapped,
-            "type": a["alert_type"],
+            "type": atype,
             "tier": a["tier"],
             "confluence": a["confluence"],
             "fired_at": a["fired_at"],
