@@ -152,11 +152,11 @@ async def _poll_loop():
                         if TIER_PRIORITY.get(tier, 0) < TIER_PRIORITY.get(TELEGRAM_MIN_TIER, 1):
                             continue
 
-                        # Alts (non-top): only TRIGGER or extreme price moves
+                        # Alts (non-top): only on extreme price moves (20%+)
                         sym = alert.get("symbol", "")
                         if sym and sym not in TOP_SYMBOLS and sym != "GLOBAL":
                             price_chg = abs(alert.get("price_change_pct", 0))
-                            if tier != "TRIGGER" and price_chg < ALT_MIN_PRICE_CHANGE:
+                            if price_chg < ALT_MIN_PRICE_CHANGE:
                                 continue
 
                         cooldown = ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
