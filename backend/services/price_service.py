@@ -73,9 +73,10 @@ async def _backfill():
     async with aiohttp.ClientSession() as session:
         for sym in SYMBOLS:
             # Check if already have data
-            row = await db.execute_fetchone(
+            cursor = await db.execute(
                 "SELECT COUNT(*) as cnt FROM ohlcv_4h WHERE symbol = ?", (sym,)
             )
+            row = await cursor.fetchone()
             if row and row["cnt"] >= BACKFILL_LIMIT * 0.8:
                 count += 1
                 continue
