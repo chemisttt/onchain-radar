@@ -6,6 +6,7 @@ import aiohttp
 
 from db import get_db
 from services import dexscreener, etherscan, helius, geckoterminal
+from services.etherscan import KNOWN_PROTOCOLS
 from routers.feed import manager
 
 log = logging.getLogger("feed_engine")
@@ -29,6 +30,25 @@ _task: asyncio.Task | None = None
 
 # Rolling volume averages for spike detection
 _volume_history: dict[str, list[float]] = {}
+
+# In-memory verified contracts lookup: (chain, address) → {symbol, name, category, protocol}
+_verified: dict[tuple[str, str], dict] = {}
+
+
+async def _load_verified_contracts():
+    """Load verified contracts into memory for fast lookup."""
+    db = get_db()
+    rows = await db.execute_fetchall("SELECT chain, address, symbol, name, category, protocol FROM verified_contracts")
+    for r in rows:
+        _verified[(r["chain"], r["address"].lower())] = {
+            "symbol": r["symbol"], "name": r["name"],
+            "category": r["category"], "protocol": r["protocol"],
+        }
+    # Also enrich etherscan whale labels with verified addresses
+    for (chain, addr), info in _verified.items():
+        if chain == "ethereum" and addr not in KNOWN_PROTOCOLS:
+            KNOWN_PROTOCOLS[addr] = f"{info['name']} ({info['category']})"
+    log.info(f"Loaded {len(_verified)} verified contracts")
 
 # Rotate GeckoTerminal networks to avoid rate limits (30 req/min)
 _gecko_network_idx = 0
@@ -60,7 +80,20 @@ _last_flush_time: float = 0
 _FLUSH_INTERVAL = 2.0  # Batch WS broadcasts every 2 seconds
 
 
+def _enrich_verified(event: dict):
+    """Tag event if token_address matches a verified contract."""
+    addr = (event.get("token_address") or "").lower()
+    chain = event.get("chain", "")
+    info = _verified.get((chain, addr))
+    if info:
+        details = event.setdefault("details", {})
+        details["is_verified"] = True
+        details["verified_protocol"] = info["protocol"]
+        details["verified_category"] = info["category"]
+
+
 async def _save_and_broadcast(event: dict):
+    _enrich_verified(event)
     db = get_db()
     await db.execute(
         """INSERT INTO feed_events (event_type, chain, token_address, pair_address, token_symbol, details, severity)
@@ -335,6 +368,7 @@ async def _poll_whale_transfers(session: aiohttp.ClientSession):
 
 async def _poll_loop():
     log.info("Feed engine started")
+    await _load_verified_contracts()
     tick = 0
     async with aiohttp.ClientSession() as session:
         while True:

@@ -153,3 +153,18 @@ CREATE TABLE IF NOT EXISTS liquidation_events (
     timestamp INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_liq_sym_ts ON liquidation_events(symbol, timestamp);
+
+-- Verified protocol contracts (seeded from evm_automation skill)
+CREATE TABLE IF NOT EXISTS verified_contracts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chain TEXT NOT NULL,
+    address TEXT NOT NULL,
+    symbol TEXT,
+    name TEXT,
+    category TEXT NOT NULL,
+    protocol TEXT,
+    added_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(chain, address)
+);
+CREATE INDEX IF NOT EXISTS idx_verified_chain ON verified_contracts(chain);
+CREATE INDEX IF NOT EXISTS idx_verified_address ON verified_contracts(address);
