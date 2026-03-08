@@ -1245,6 +1245,109 @@ async def get_symbol_detail(symbol: str, days: int = 365) -> dict:
     return {"symbol": sym, "latest": latest, "history": history}
 
 
+# ── Coinalyze daily sync ─────────────────────────────────────────────
+
+COINALYZE_API_KEY = "815646d8-7577-4570-921e-a2329a6bb376"
+_coinalyze_last_sync: str = ""  # date string of last successful sync
+
+
+async def _coinalyze_sync():
+    """Fetch yesterday's liq + OI data from Coinalyze (free API, Binance perps).
+    Runs once per day — called from poll loop, skips if already synced today."""
+    global _coinalyze_last_sync
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _coinalyze_last_sync == today:
+        return
+
+    # Fetch last 3 days to cover gaps (service restarts, timezone edge cases)
+    end_ts = int(datetime.now(timezone.utc).timestamp())
+    start_ts = end_ts - 3 * 86400
+
+    db = get_db()
+    total_liq = 0
+    total_oi = 0
+
+    async with aiohttp.ClientSession() as session:
+        for batch_start in range(0, len(SYMBOLS), 20):
+            batch = SYMBOLS[batch_start:batch_start + 20]
+            ca_symbols = ",".join(f"{s}_PERP.A" for s in batch)
+
+            # Liquidations
+            try:
+                url = (
+                    f"https://api.coinalyze.net/v1/liquidation-history"
+                    f"?symbols={ca_symbols}&interval=daily"
+                    f"&from={start_ts}&to={end_ts}&convert_to_usd=true"
+                    f"&api_key={COINALYZE_API_KEY}"
+                )
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data:
+                            sym = item["symbol"].replace("_PERP.A", "")
+                            for h in item.get("history", []):
+                                date_str = datetime.fromtimestamp(
+                                    h["t"], tz=timezone.utc
+                                ).strftime("%Y-%m-%d")
+                                liq_long = h.get("l", 0) or 0
+                                liq_short = h.get("s", 0) or 0
+                                liq_delta = liq_long - liq_short
+                                r = await db.execute(
+                                    """UPDATE daily_derivatives
+                                       SET liquidations_long = ?,
+                                           liquidations_short = ?,
+                                           liquidations_delta = ?
+                                       WHERE symbol = ? AND date = ?""",
+                                    (liq_long, liq_short, liq_delta, sym, date_str),
+                                )
+                                total_liq += r.rowcount
+                    else:
+                        log.warning(f"Coinalyze liq HTTP {resp.status}")
+            except Exception as e:
+                log.warning(f"Coinalyze liq sync error: {e}")
+
+            # OI
+            try:
+                url = (
+                    f"https://api.coinalyze.net/v1/open-interest-history"
+                    f"?symbols={ca_symbols}&interval=daily"
+                    f"&from={start_ts}&to={end_ts}&convert_to_usd=true"
+                    f"&api_key={COINALYZE_API_KEY}"
+                )
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data:
+                            sym = item["symbol"].replace("_PERP.A", "")
+                            for h in item.get("history", []):
+                                date_str = datetime.fromtimestamp(
+                                    h["t"], tz=timezone.utc
+                                ).strftime("%Y-%m-%d")
+                                oi_close = h.get("c", 0) or 0
+                                if oi_close > 0:
+                                    r = await db.execute(
+                                        """UPDATE daily_derivatives
+                                           SET oi_binance_usd = ?
+                                           WHERE symbol = ? AND date = ?""",
+                                        (oi_close, sym, date_str),
+                                    )
+                                    total_oi += r.rowcount
+                    else:
+                        log.warning(f"Coinalyze OI HTTP {resp.status}")
+            except Exception as e:
+                log.warning(f"Coinalyze OI sync error: {e}")
+
+            # Respect rate limit between batches
+            if batch_start + 20 < len(SYMBOLS):
+                await asyncio.sleep(2)
+
+    await db.commit()
+    _coinalyze_last_sync = today
+    if total_liq or total_oi:
+        log.info(f"Coinalyze sync: {total_liq} liq + {total_oi} OI rows updated")
+
+
 # ── Poll loop ────────────────────────────────────────────────────────
 
 async def _poll_loop():
@@ -1273,6 +1376,13 @@ async def _poll_loop():
             log.info(f"Derivatives: updated {saved} symbols")
         except Exception as e:
             log.error(f"Derivatives poll error: {e}")
+
+        # Daily Coinalyze sync (liq + OI ground truth)
+        try:
+            await _coinalyze_sync()
+        except Exception as e:
+            log.warning(f"Coinalyze sync error: {e}")
+
         await asyncio.sleep(POLL_INTERVAL)
 
 
