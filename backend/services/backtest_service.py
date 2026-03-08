@@ -181,7 +181,7 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
 
     # Main derivatives data — including liq_long + liq_short
     rows = await db.execute_fetchall(
-        """SELECT date, close_price, open_interest_usd, funding_rate,
+        """SELECT date, close_price, open_interest_usd, oi_binance_usd, funding_rate,
                   liquidations_long, liquidations_short, liquidations_delta, volume_usd
            FROM daily_derivatives
            WHERE symbol = ?
@@ -193,7 +193,7 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
 
     dates = [r["date"] for r in rows]
     prices = [r["close_price"] or 0 for r in rows]
-    ois = [r["open_interest_usd"] or 0 for r in rows]
+    ois = [(r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0) for r in rows]
     fundings = [r["funding_rate"] or 0 for r in rows]
     liq_deltas = [r["liquidations_delta"] or 0 for r in rows]
     liq_longs = [r["liquidations_long"] or 0 for r in rows]
@@ -577,7 +577,7 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
     db = get_db()
 
     rows = await db.execute_fetchall(
-        """SELECT ts, close_price, open_interest_usd, funding_rate,
+        """SELECT ts, close_price, open_interest_usd, oi_binance_usd, funding_rate,
                   liquidations_long, liquidations_short, liquidations_delta, volume_usd
            FROM derivatives_4h
            WHERE symbol = ?
@@ -589,7 +589,7 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
 
     timestamps = [r["ts"] // 1000 for r in rows]  # seconds
     prices = [r["close_price"] or 0 for r in rows]
-    ois = [r["open_interest_usd"] or 0 for r in rows]
+    ois = [(r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0) for r in rows]
     fundings = [r["funding_rate"] or 0 for r in rows]
     liq_deltas = [r["liquidations_delta"] or 0 for r in rows]
     liq_longs = [r["liquidations_long"] or 0 for r in rows]
