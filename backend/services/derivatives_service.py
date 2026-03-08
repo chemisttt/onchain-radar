@@ -1215,7 +1215,8 @@ async def get_symbol_detail(symbol: str, days: int = 365) -> dict:
     # History — use Binance-only OI for chart (avoids aggregate spikes)
     history_rows = await db.execute_fetchall(
         """SELECT d.date, d.close_price, d.open_interest_usd, d.oi_binance_usd,
-                  d.funding_rate, d.liquidations_delta, d.volume_usd,
+                  d.funding_rate, d.liquidations_long, d.liquidations_short,
+                  d.liquidations_delta, d.volume_usd,
                   z.oi_zscore, z.funding_zscore, z.liq_zscore, z.volume_zscore
            FROM daily_derivatives d
            LEFT JOIN derivatives_zscores z ON d.symbol = z.symbol AND d.date = z.date
@@ -1232,6 +1233,8 @@ async def get_symbol_detail(symbol: str, days: int = 365) -> dict:
             "price": r["close_price"] or 0,
             "oi": oi,
             "funding": r["funding_rate"] or 0,
+            "liq_long": r["liquidations_long"] or 0,
+            "liq_short": r["liquidations_short"] or 0,
             "liq_delta": r["liquidations_delta"] or 0,
             "volume": r["volume_usd"] or 0,
             "oi_zscore": r["oi_zscore"] or 0,

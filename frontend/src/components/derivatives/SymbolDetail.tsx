@@ -1,4 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+} from 'recharts'
 import { useDerivativesDetail } from '../../hooks/useDerivativesDetail'
 import MetricChart from './MetricChart'
 import ZScoreChart from './ZScoreChart'
@@ -97,6 +100,8 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
       price: h.price,
       oi: h.oi,
       funding: h.funding * 100,
+      liq_long: h.liq_long || 0,
+      liq_short: -(h.liq_short || 0),
       liq_delta: h.liq_delta,
       volume: h.volume,
       oi_zscore: h.oi_zscore,
@@ -214,12 +219,13 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
           </ChartCard>
 
           <ChartCard
-            title="Liquidations Delta"
-            onExpand={() =>
-              setExpanded({ title: `${sym} Liquidations Delta`, metricKey: 'liq_delta', color: '#ef4444' })
-            }
+            title="Liquidations"
             footer={
               <>
+                <span className="text-text-secondary">Long:</span>
+                <span className="text-[#22c55e]">{fmtUsd(l.liquidations_long)}</span>
+                <span className="text-text-secondary">Short:</span>
+                <span className="text-[#ef4444]">{fmtUsd(l.liquidations_short)}</span>
                 <span className="text-text-secondary">Delta:</span>
                 <CV
                   value={l.liquidations_delta}
@@ -228,15 +234,48 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
               </>
             }
           >
-            <MetricChart
-              data={chartData}
-              dataKey="liq_delta"
-              chartType="bar"
-              color="#ef4444"
-              formatValue={(v) => fmtUsd(v)}
-              barSize={2}
-              label="Liq Delta"
-            />
+            <div className="h-full w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }} stackOffset="sign">
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 8, fill: '#555' }}
+                    interval="preserveStartEnd"
+                    tickLine={false}
+                    axisLine={{ stroke: '#222' }}
+                    tickFormatter={(v: string) => v.slice(5)}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 8, fill: '#555' }}
+                    tickFormatter={(v: number) => {
+                      if (Math.abs(v) >= 1e9) return `${(v / 1e9).toFixed(1)}B`
+                      if (Math.abs(v) >= 1e6) return `${(v / 1e6).toFixed(1)}M`
+                      if (Math.abs(v) >= 1e3) return `${(v / 1e3).toFixed(0)}K`
+                      return v.toFixed(0)
+                    }}
+                    width={52}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: '#222', border: '1px solid #444', borderRadius: 4, fontSize: 11, padding: '6px 10px', color: '#e2e8f0' }}
+                    labelStyle={{ color: '#999', fontSize: 10 }}
+                    labelFormatter={(v: any) => {
+                      const d = new Date(v)
+                      return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    }}
+                    formatter={(value: any, name: any) => {
+                      const v = Math.abs(Number(value))
+                      return [fmtUsd(v), name === 'liq_long' ? 'Long' : 'Short']
+                    }}
+                    cursor={{ fill: 'transparent' }}
+                  />
+                  <ReferenceLine y={0} stroke="#333" />
+                  <Bar dataKey="liq_long" stackId="liq" fill="#22c55e" fillOpacity={0.85} maxBarSize={3} />
+                  <Bar dataKey="liq_short" stackId="liq" fill="#ef4444" fillOpacity={0.85} maxBarSize={3} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </ChartCard>
         </div>
 
@@ -262,47 +301,6 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
               formatValue={(v) => fmtUsd(v)}
               barSize={3}
               label="Volume"
-            />
-          </ChartCard>
-
-          {/* Liq Long vs Short */}
-          <ChartCard
-            title="Liq Long"
-            footer={
-              <>
-                <span className="text-text-secondary">Long:</span>
-                <span className="text-[#22c55e]">{fmtUsd(l.liquidations_long)}</span>
-              </>
-            }
-          >
-            <MetricChart
-              data={chartData}
-              dataKey="liq_delta"
-              chartType="bar"
-              color="#22c55e"
-              formatValue={(v) => fmtUsd(v)}
-              barSize={2}
-              label="Liq Long"
-            />
-          </ChartCard>
-
-          <ChartCard
-            title="Liq Short"
-            footer={
-              <>
-                <span className="text-text-secondary">Short:</span>
-                <span className="text-[#ef4444]">{fmtUsd(l.liquidations_short)}</span>
-              </>
-            }
-          >
-            <MetricChart
-              data={chartData}
-              dataKey="liq_delta"
-              chartType="bar"
-              color="#ef4444"
-              formatValue={(v) => fmtUsd(Math.abs(v))}
-              barSize={2}
-              label="Liq Short"
             />
           </ChartCard>
         </div>
