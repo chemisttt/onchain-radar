@@ -162,8 +162,8 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
           Perpetuals Data
         </div>
 
-        {/* Row 1: Raw metrics */}
-        <div className="grid grid-cols-3 gap-2 h-[200px]">
+        {/* Row 1: OI + Funding */}
+        <div className="grid grid-cols-2 gap-2 h-[200px]">
           <ChartCard
             title="Open Interest"
             onExpand={() =>
@@ -215,6 +215,32 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
               formatValue={(v) => `${v.toFixed(4)}%`}
               formatY={(v) => `${v.toFixed(3)}%`}
               label="Funding Rate"
+            />
+          </ChartCard>
+        </div>
+
+        {/* Row 2: Volume + Liquidations */}
+        <div className="grid grid-cols-2 gap-2 h-[200px]">
+          <ChartCard
+            title="Volume"
+            onExpand={() =>
+              setExpanded({ title: `${sym} Volume`, metricKey: 'volume', color: '#6366f1' })
+            }
+            footer={
+              <>
+                <span className="text-text-secondary">Current:</span>
+                <span className="text-text-primary">{fmtUsd(l.volume_usd)}</span>
+              </>
+            }
+          >
+            <MetricChart
+              data={chartData}
+              dataKey="volume"
+              chartType="bar"
+              color="#6366f1"
+              formatValue={(v) => fmtUsd(v)}
+              barSize={3}
+              label="Volume"
             />
           </ChartCard>
 
@@ -276,32 +302,6 @@ export default function SymbolDetail({ symbol }: SymbolDetailProps) {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          </ChartCard>
-        </div>
-
-        {/* Row 2: Volume */}
-        <div className="grid grid-cols-3 gap-2 h-[200px]">
-          <ChartCard
-            title="Volume"
-            onExpand={() =>
-              setExpanded({ title: `${sym} Volume`, metricKey: 'volume', color: '#6366f1' })
-            }
-            footer={
-              <>
-                <span className="text-text-secondary">Current:</span>
-                <span className="text-text-primary">{fmtUsd(l.volume_usd)}</span>
-              </>
-            }
-          >
-            <MetricChart
-              data={chartData}
-              dataKey="volume"
-              chartType="bar"
-              color="#6366f1"
-              formatValue={(v) => fmtUsd(v)}
-              barSize={3}
-              label="Volume"
-            />
           </ChartCard>
         </div>
 
