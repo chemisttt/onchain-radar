@@ -130,7 +130,7 @@ async def get_backtest(
             "confluence": a["confluence"],
             "fired_at": a["fired_at"],
             "entry_price": a["entry_price"],
-            "direction": a["expected_direction"],
+            "direction": {"up": "long", "down": "short"}.get(a["expected_direction"], a["expected_direction"]),
             "price_1d": a["price_1d"],
             "price_3d": a["price_3d"],
             "price_7d": a["price_7d"],

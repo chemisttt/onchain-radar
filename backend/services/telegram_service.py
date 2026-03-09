@@ -23,10 +23,10 @@ _task: asyncio.Task | None = None
 POLL_INTERVAL = 60  # check every 60 seconds
 DIGEST_HOUR_UTC = 18  # 18:00 UTC = 21:00 MSK
 ALERT_COOLDOWNS = {
-    "SIGNAL": 14400,   # 4 hours
-    "TRIGGER": 3600,   # 1 hour
+    "SIGNAL": 43200,   # 12 hours (match backtest 24h cooldown — persistent state signals)
+    "TRIGGER": 21600,  # 6 hours
 }
-DEFAULT_COOLDOWN = 7200  # fallback 2 hours
+DEFAULT_COOLDOWN = 14400  # fallback 4 hours
 # SETUP tier is too noisy for Telegram — only send SIGNAL and TRIGGER
 TELEGRAM_MIN_TIER = "SIGNAL"
 TIER_PRIORITY = {"SETUP": 0, "INFO": 1, "SIGNAL": 1, "TRIGGER": 2}
