@@ -1,0 +1,160 @@
+{
+  "_meta": {
+    "name": "Phase B Baseline",
+    "date": "2026-03-11",
+    "trades": 441,
+    "win_rate": 49.9,
+    "ev_per_trade": 1.58,
+    "profit_factor": 1.86,
+    "period": "Mar 2023 — Mar 2026",
+    "symbols": 30,
+    "detection_timeframe": "daily",
+    "exit_timeframe": "4h"
+  },
+
+  "thresholds": {
+    "z_moderate": 2.0,
+    "z_strong": 3.0,
+    "oi_z_overheat": 1.5,
+    "fund_z_overheat": 0.8,
+    "oi_chg_1d_squeeze": 5,
+    "price_chg_1d_squeeze": -2,
+    "fund_z_squeeze_1d_min": 0,
+    "oi_chg_3d_squeeze": 5,
+    "price_chg_3d_squeeze": -2,
+    "fund_z_squeeze_3d_min": -1.0,
+    "oi_chg_1d_top": -3,
+    "price_chg_1d_top": 2,
+    "price_chg_3d_dist": 1.5,
+    "price_vs_sma_overext_lo": 8,
+    "price_vs_sma_overext_hi": 15,
+    "fund_z_overext": 0.5,
+    "oi_chg_3d_stall": 4,
+    "price_chg_3d_stall": 2,
+    "fund_z_stall": 0.3,
+    "oi_z_capitulation": -1.5,
+    "fund_z_capitulation": -0.8,
+    "liq_short_z_squeeze": 3.0,
+    "price_chg_squeeze_lo": 3,
+    "price_chg_squeeze_hi": 8,
+    "oi_chg_squeeze_cap": 20,
+    "fund_z_squeeze_cap": 1.5,
+    "fund_z_reversal": 1.5,
+    "fund_delta_reversal": 0.0005,
+    "momentum_div_price_chg": 3,
+    "momentum_div_mom_thresh": 20,
+    "liq_ratio_z": 2.5,
+    "liq_ratio_price_chg": 1,
+    "fund_spike_z": 1.5,
+    "fund_spike_momentum": 3
+  },
+
+  "confluence": {
+    "setup_min": 3,
+    "signal_min": 4,
+    "trigger_min": 6,
+    "trigger_capped_to": "SIGNAL",
+    "alt_min_confluence": 5
+  },
+
+  "tiers": {
+    "SETUP": ">=3",
+    "SIGNAL": ">=4",
+    "TRIGGER": ">=6 (capped to SIGNAL)"
+  },
+
+  "adaptive_exit_routing": {
+    "liq_short_squeeze": "counter_sig",
+    "div_squeeze_3d": "counter_sig",
+    "div_top_1d": "counter_sig",
+    "distribution": "fixed",
+    "oi_buildup_stall": "fixed",
+    "vol_divergence": "counter_sig",
+    "overheat": "fixed",
+    "overextension": "trail_atr",
+    "fund_reversal": "zscore_mr",
+    "capitulation": "zscore_mr",
+    "momentum_divergence": "counter_sig",
+    "liq_ratio_extreme": "counter_sig",
+    "fund_spike": "trail_atr",
+    "div_squeeze_1d": "hybrid"
+  },
+
+  "exit_params": {
+    "counter_sig": { "hard_stop": 12.0, "max_hold_days": 30 },
+    "fixed": { "tp": 5, "sl": 3 },
+    "trail_atr": { "atr_mult": 1.5, "max_hold_days": 30 },
+    "zscore_mr": { "max_hold_days": 30 },
+    "hybrid": { "max_hold_days": 30 }
+  },
+
+  "momentum_filter_exemptions": [
+    "distribution",
+    "momentum_divergence",
+    "fund_spike"
+  ],
+
+  "disabled_signals": [
+    "volume_spike",
+    "liq_long_flush",
+    "oi_flush_vol",
+    "vol_expansion",
+    "div_top_3d",
+    "liq_flush",
+    "liq_flush_3d",
+    "div_squeeze_5d"
+  ],
+
+  "cooldowns": {
+    "backtest_daily": { "days": 1, "per": "type:symbol" },
+    "backtest_4h": { "candles": 6, "per": "type:symbol" },
+    "live_signal": { "hours": 12 },
+    "live_trigger": { "hours": 6 }
+  },
+
+  "caps": {
+    "daily_per_symbol": 3,
+    "global_daily": 5
+  },
+
+  "clustering": {
+    "gap_days": 2,
+    "gap_candles_4h": 6
+  },
+
+  "z_score_windows": {
+    "daily": 365,
+    "4h": 2190
+  },
+
+  "sma_periods": {
+    "daily": 20,
+    "4h": 120
+  },
+
+  "top_oi_symbols": [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT",
+    "DOGEUSDT", "TRXUSDT", "UNIUSDT", "SUIUSDT", "ADAUSDT"
+  ],
+
+  "per_signal_results": {
+    "liq_short_squeeze":    { "n": 81, "wr": 56, "ev": 3.54, "exit": "counter_sig" },
+    "vol_divergence":       { "n": 3,  "wr": 100, "ev": 3.76, "exit": "counter_sig" },
+    "fund_reversal":        { "n": 3,  "wr": 50, "ev": 3.60, "exit": "zscore_mr" },
+    "div_squeeze_3d":       { "n": 18, "wr": 50, "ev": 2.11, "exit": "counter_sig" },
+    "distribution":         { "n": 23, "wr": 61, "ev": 1.85, "exit": "fixed" },
+    "momentum_divergence":  { "n": 82, "wr": 57, "ev": 1.72, "exit": "counter_sig" },
+    "liq_ratio_extreme":    { "n": 82, "wr": 56, "ev": 1.51, "exit": "counter_sig" },
+    "div_top_1d":           { "n": 18, "wr": 44, "ev": 1.04, "exit": "counter_sig" },
+    "oi_buildup_stall":     { "n": 7,  "wr": 50, "ev": 0.98, "exit": "fixed" },
+    "fund_spike":           { "n": 95, "wr": 33, "ev": 0.37, "exit": "trail_atr" },
+    "overheat":             { "n": 33, "wr": 39, "ev": 0.15, "exit": "fixed" }
+  },
+
+  "walk_forward": {
+    "windows": 6,
+    "all_positive": true,
+    "avg_ev": 1.84,
+    "worst_ev": 0.66
+  }
+}

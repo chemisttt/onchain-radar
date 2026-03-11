@@ -15,8 +15,32 @@ Personal derivatives analytics dashboard. Real-time monitoring of OI, funding, l
 |-----|----------|
 | [docs/metrics-guide.md](docs/metrics-guide.md) | Все метрики + торговые стратегии |
 | [docs/TODO.md](docs/TODO.md) | 7 фич (VRP, Alt OI Dom, Vol Cone, Spot Delta, Composite v2, Momentum, Scatter) |
+| [docs/signal-backtest-results.md](docs/signal-backtest-results.md) | Бектест сигналов: WR/EV per type, thresholds, disabled signals |
+| [docs/equity-simulation.md](docs/equity-simulation.md) | Equity curves, leverage, position sizing, monthly PnL |
 | [README.md](README.md) | Архитектура, установка, API endpoints |
 | [SPEC.md](SPEC.md) | Полное ТЗ и roadmap |
+
+## Signal System
+
+Two mirrored files define the same signal logic:
+- `backtest_service.py` — historical backtesting (daily + 4h timeframes)
+- `market_analyzer.py` — live alerts (5min cycle)
+
+**RULE**: Any threshold/condition change MUST be applied to BOTH files (3 sections: daily backtest, 4h backtest, live).
+
+### Alert Pipeline
+`market_analyzer.check_alerts()` → `telegram_service` (cooldown check + send) → `record_alert()` → `alert_tracking` DB → `derivatives.py` router (direction mapping) → frontend chart
+
+### Key Constants
+- `TOP_OI_SYMBOLS` — BTC, ETH, SOL, XRP, BNB, DOGE, TRX, UNI, SUI, ADA
+- Tiers: SETUP (≥3), SIGNAL (≥4), TRIGGER (≥6 but **capped to SIGNAL**)
+- Cooldowns: SIGNAL=12h, TRIGGER=6h (telegram_service.py)
+- Direction: backtest uses "long"/"short", live DB uses "up"/"down", router maps to "long"/"short" for frontend
+
+### Backtest Scripts
+- `scripts/run_backtest_v2.py` — full backtest with MFE/MAE evaluation
+- `scripts/analyze_losers.py` — winner vs loser feature comparison per signal type
+- Run from: `cd backend && python3 scripts/run_backtest_v2.py`
 
 ## Module Map
 
@@ -64,6 +88,8 @@ Personal derivatives analytics dashboard. Real-time monitoring of OI, funding, l
 - Polling intervals: derivatives 5min, OB 30sec, funding 60sec, feed 10-60sec
 - Liq WS batch flush: 3 events OR 10 seconds (whichever first)
 - Route order in derivatives.py: specific paths BEFORE `{symbol}` catch-all
+- VPS: `77.221.154.136` user `botuser`, path `/home/botuser/onchain-radar`, no sudo — use `/deploy` command
+- Signal direction convention: backtest="long"/"short", live DB="up"/"down", router normalizes for frontend
 
 ## Subagents & Commands
 

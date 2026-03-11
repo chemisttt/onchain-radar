@@ -13,6 +13,19 @@ from datetime import datetime, timezone
 from db import get_db
 from services import derivatives_service, funding_service, price_service
 from services.derivatives_service import SYMBOLS
+from services.signal_conditions import (
+    OI_Z_OVERHEAT, FUND_Z_OVERHEAT,
+    OI_CHG_1D_SQUEEZE, PRICE_CHG_1D_SQUEEZE, FUND_Z_SQUEEZE_1D_MIN,
+    OI_CHG_3D_SQUEEZE, PRICE_CHG_3D_SQUEEZE, FUND_Z_SQUEEZE_3D_MIN,
+    OI_CHG_1D_TOP, PRICE_CHG_1D_TOP,
+    PRICE_CHG_3D_DIST,
+    PRICE_VS_SMA_OVEREXT_LO, PRICE_VS_SMA_OVEREXT_HI, FUND_Z_OVEREXT,
+    OI_CHG_3D_STALL, PRICE_CHG_3D_STALL, FUND_Z_STALL,
+    OI_Z_CAPITULATION, FUND_Z_CAPITULATION,
+    LIQ_SHORT_Z_SQUEEZE, PRICE_CHG_SQUEEZE_LO, PRICE_CHG_SQUEEZE_HI,
+    OI_CHG_SQUEEZE_CAP, FUND_Z_SQUEEZE_CAP,
+    FUND_Z_REVERSAL, FUND_DELTA_REVERSAL,
+)
 
 log = logging.getLogger("market_analyzer")
 
@@ -624,6 +637,23 @@ async def _get_multi_day_batch() -> dict[str, dict]:
             "price_momentum": price_chg_5d,
         }
 
+    # Load momentum data for new signals
+    mom_rows = await db.execute_fetchall(
+        """SELECT symbol, momentum_value, relative_volume
+           FROM daily_momentum
+           ORDER BY date DESC""",
+    )
+    # Keep only the latest row per symbol
+    mom_seen: set[str] = set()
+    for r in mom_rows:
+        sym = r["symbol"]
+        if sym in mom_seen:
+            continue
+        mom_seen.add(sym)
+        if sym in result:
+            result[sym]["momentum_value"] = r["momentum_value"] or 0.0
+            result[sym]["relative_volume"] = r["relative_volume"] or 0.0
+
     return result
 
 
@@ -723,14 +753,18 @@ async def check_alerts() -> list[dict]:
         if sym not in TOP_OI_SYMBOLS and confluence < ALT_MIN_CONFLUENCE:
             continue
 
+        # Momentum filter: skip signals against the trend
+        _skip_long = trend == "down"
+        _skip_short = trend == "up"
+
         # ── DIRECTIONAL ALERTS (backtest-aligned thresholds) ──
         # Signal families: only fire strongest timeframe (5d > 3d > 1d)
         fired_families: set[str] = set()
 
         # === SHORT signals ===
 
-        # 1. OVERHEAT — OI + funding elevated (relaxed: 1.5/0.8)
-        if oi_z > 1.5 and fund_z > 0.8:
+        # 1. OVERHEAT — OI + funding elevated (skip in uptrend — shorts into parabolas)
+        if oi_z > OI_Z_OVERHEAT and fund_z > FUND_Z_OVERHEAT and trend != "up":
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -746,41 +780,30 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        # 2. FUND SPIKE — funding extreme + price momentum up → crowded longs
-        if fund_z > 1.5 and price_momentum > 3:
-            tier = _score_to_tier(confluence + _crash_short)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "fund_spike", sym, short_sym, "FUND SPIKE — фандинг экстремальный",
-                    cur, velocities, confluence + _crash_short, tier, factors,
-                    indicators=[
-                        f"Фандинг z: {fund_z:+.1f} при росте цены 5d: {price_momentum:+.1f}%",
-                        "Лонги перегружены — коррекция вероятна",
-                    ],
-                    action=[
-                        "Готовить шорт от сопротивления",
-                        "Ждать разворот фандинга как подтверждение",
-                    ],
-                ))
+        # 2. FUND SPIKE — DISABLED (3yr backtest: 108/324 trades, EV +0.1%, 45% timeouts, pure noise)
+        # if fund_z > 1.5 and price_momentum > 3:
+        #     tier = _score_to_tier(confluence + _crash_short)
+        #     if tier:
+        #         alerts.append(_build_directional_alert(
+        #             "fund_spike", sym, short_sym, "FUND SPIKE — фандинг экстремальный",
+        #             cur, velocities, confluence + _crash_short, tier, factors,
+        #             indicators=[
+        #                 f"Фандинг z: {fund_z:+.1f} при росте цены 5d: {price_momentum:+.1f}%",
+        #                 "Лонги перегружены — коррекция вероятна",
+        #             ],
+        #             action=[
+        #                 "Готовить шорт от сопротивления",
+        #                 "Ждать разворот фандинга как подтверждение",
+        #             ],
+        #         ))
 
         # DIVERGENCE SQUEEZE family — strongest timeframe wins (5d > 3d > 1d)
-        if oi_chg_5d > 8 and price_chg_5d < -3:
-            fired_families.add("div_squeeze")
-            tier = _score_to_tier(confluence + _crash_short)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "div_squeeze_5d", sym, short_sym, "ДИВЕРГЕНЦИЯ 5D — OI↑ Price↓",
-                    cur, velocities, confluence + _crash_short, tier, factors,
-                    indicators=[
-                        f"OI +{oi_chg_5d:.1f}% при цене {price_chg_5d:+.1f}% за 5 дней",
-                        "Сильное давление — тренд вниз подтверждён",
-                    ],
-                    action=[
-                        "Шорт при любом откате, не ловить нож",
-                    ],
-                ))
+        # div_squeeze_5d — DISABLED (negative EV across all exit strategies, setup backtest 2026-03-09)
+        # if oi_chg_5d > 8 and price_chg_5d < -3:
+        #     fired_families.add("div_squeeze")
+        #     ...
 
-        if "div_squeeze" not in fired_families and oi_chg_3d > 5 and price_chg_3d < -2 and fund_z > -1.0:
+        if oi_chg_3d > OI_CHG_3D_SQUEEZE and price_chg_3d < PRICE_CHG_3D_SQUEEZE and fund_z > FUND_Z_SQUEEZE_3D_MIN and not _skip_short:
             fired_families.add("div_squeeze")
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
@@ -796,7 +819,7 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        if "div_squeeze" not in fired_families and oi_chg > 5 and price_chg < -2 and fund_z > 0 and trend != "down":
+        if "div_squeeze" not in fired_families and oi_chg > OI_CHG_1D_SQUEEZE and price_chg < PRICE_CHG_1D_SQUEEZE and fund_z > FUND_Z_SQUEEZE_1D_MIN and trend != "down" and not _skip_short:
             fired_families.add("div_squeeze")
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
@@ -814,23 +837,24 @@ async def check_alerts() -> list[dict]:
                 ))
 
         # DIVERGENCE TOP family — strongest timeframe wins (3d > 1d)
-        if oi_chg_3d < -4 and price_chg_3d > 2.5:
-            fired_families.add("div_top")
-            tier = _score_to_tier(confluence + _crash_short)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "div_top_3d", sym, short_sym, "ДИВЕРГЕНЦИЯ ТОП 3D — OI↓ Price↑",
-                    cur, velocities, confluence + _crash_short, tier, factors,
-                    indicators=[
-                        f"OI {oi_chg_3d:+.1f}% при росте {price_chg_3d:+.1f}% за 3 дня",
-                        "Устойчивый выход позиций при росте — топ близко",
-                    ],
-                    action=[
-                        "Сокращать лонги, искать шорт от сопротивления",
-                    ],
-                ))
+        # div_top_3d DISABLED — 5/8 trades short at pvs 17-67% above SMA (parabolic), net negative over 3yr
+        # if oi_chg_3d < -4 and price_chg_3d > 2.5:
+        #     fired_families.add("div_top")
+        #     tier = _score_to_tier(confluence + _crash_short)
+        #     if tier:
+        #         alerts.append(_build_directional_alert(
+        #             "div_top_3d", sym, short_sym, "ДИВЕРГЕНЦИЯ ТОП 3D — OI↓ Price↑",
+        #             cur, velocities, confluence + _crash_short, tier, factors,
+        #             indicators=[
+        #                 f"OI {oi_chg_3d:+.1f}% при росте {price_chg_3d:+.1f}% за 3 дня",
+        #                 "Устойчивый выход позиций при росте — топ близко",
+        #             ],
+        #             action=[
+        #                 "Сокращать лонги, искать шорт от сопротивления",
+        #             ],
+        #         ))
 
-        if "div_top" not in fired_families and oi_chg < -3 and price_chg > 2:
+        if "div_top" not in fired_families and oi_chg < OI_CHG_1D_TOP and price_chg > PRICE_CHG_1D_TOP and trend != "up":
             fired_families.add("div_top")
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
@@ -847,8 +871,8 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        # 8. DISTRIBUTION — цена растёт но объём падает (relaxed from 2 to 1.5)
-        if price_chg_3d > 1.5 and vol_declining_3d and trend == "up":
+        # 8. DISTRIBUTION — цена растёт но объём падает (counter-trend by design, exempt from momentum filter)
+        if price_chg_3d > PRICE_CHG_3D_DIST and vol_declining_3d and trend == "up":
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -864,7 +888,7 @@ async def check_alerts() -> list[dict]:
                 ))
 
         # 9. OVEREXTENSION — цена далеко от SMA
-        if price_vs_sma > 8 and fund_z > 0.5:
+        if PRICE_VS_SMA_OVEREXT_LO < price_vs_sma < PRICE_VS_SMA_OVEREXT_HI and fund_z > FUND_Z_OVEREXT and not _skip_short:
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -880,7 +904,7 @@ async def check_alerts() -> list[dict]:
                 ))
 
         # 10. OI BUILDUP STALL — OI растёт но цена стоит → ловушка (relaxed)
-        if oi_chg_3d > 4 and abs(price_chg_3d) < 2 and fund_z > 0.3:
+        if oi_chg_3d > OI_CHG_3D_STALL and abs(price_chg_3d) < PRICE_CHG_3D_STALL and fund_z > FUND_Z_STALL and not _skip_short:
             tier = _score_to_tier(confluence + _crash_short)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -899,7 +923,7 @@ async def check_alerts() -> list[dict]:
         # === LONG signals ===
 
         # 11. CAPITULATION — OI + funding вымыты (not in downtrend — avoid falling knife)
-        if oi_z < -1.5 and fund_z < -0.8 and trend != "down":
+        if oi_z < OI_Z_CAPITULATION and fund_z < FUND_Z_CAPITULATION and trend != "down":
             tier = _score_to_tier(confluence + _crash_long)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -915,57 +939,59 @@ async def check_alerts() -> list[dict]:
                     ],
                 ))
 
-        # LIQ FLUSH family — strongest timeframe wins (3d > 1d)
-        if liq_z > 2.0 and price_chg_3d < -8 and oi_chg_3d < -5 and trend == "up" and fund_z < 0 and price_momentum < -5:
-            fired_families.add("liq_flush")
-            tier = _score_to_tier(confluence + _crash_long)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "liq_flush_3d", sym, short_sym, "LIQ FLUSH 3D — затяжной слив",
-                    cur, velocities, confluence + _crash_long, tier, factors,
-                    indicators=[
-                        f"Цена {price_chg_3d:+.1f}%, OI {oi_chg_3d:+.1f}% за 3 дня",
-                        "Затяжной слив — очищение рынка завершается",
-                    ],
-                    action=[
-                        "Искать лонг от поддержки после стабилизации",
-                    ],
-                ))
+        # LIQ FLUSH family — DISABLED — MFE too small (avg 2.7%) for TP=5%, net negative over 3yr
+        # if liq_z > 2.0 and price_chg_3d < -8 and oi_chg_3d < -5 and trend == "up" and fund_z < 0 and price_momentum < -5:
+        #     fired_families.add("liq_flush")
+        #     tier = _score_to_tier(confluence + _crash_long)
+        #     if tier:
+        #         alerts.append(_build_directional_alert(
+        #             "liq_flush_3d", sym, short_sym, "LIQ FLUSH 3D — затяжной слив",
+        #             cur, velocities, confluence + _crash_long, tier, factors,
+        #             indicators=[
+        #                 f"Цена {price_chg_3d:+.1f}%, OI {oi_chg_3d:+.1f}% за 3 дня",
+        #                 "Затяжной слив — очищение рынка завершается",
+        #             ],
+        #             action=[
+        #                 "Искать лонг от поддержки после стабилизации",
+        #             ],
+        #         ))
 
-        if "liq_flush" not in fired_families and liq_z > 2.0 and price_chg < -5 and oi_chg < -3 and trend == "up" and price_momentum < -5:
-            fired_families.add("liq_flush")
-            tier = _score_to_tier(confluence + _crash_long)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "liq_flush", sym, short_sym, "LIQ FLUSH — каскад + OI сброс",
-                    cur, velocities, confluence + _crash_long, tier, factors,
-                    indicators=[
-                        "Каскадные ликвидации + слив OI = массовый сброс",
-                        "Слабые лонги ликвидированы, рынок очищается",
-                    ],
-                    action=[
-                        "НЕ шортить на минимумах — сброс уже произошёл",
-                        "Ждать стабилизацию, затем лонг",
-                    ],
-                ))
+        # if "liq_flush" not in fired_families and liq_z > 2.0 and price_chg < -5 and oi_chg < -3 and trend == "up" and price_momentum < -5:
+        #     fired_families.add("liq_flush")
+        #     tier = _score_to_tier(confluence + _crash_long)
+        #     if tier:
+        #         alerts.append(_build_directional_alert(
+        #             "liq_flush", sym, short_sym, "LIQ FLUSH — каскад + OI сброс",
+        #             cur, velocities, confluence + _crash_long, tier, factors,
+        #             indicators=[
+        #                 "Каскадные ликвидации + слив OI = массовый сброс",
+        #                 "Слабые лонги ликвидированы, рынок очищается",
+        #             ],
+        #             action=[
+        #                 "НЕ шортить на минимумах — сброс уже произошёл",
+        #                 "Ждать стабилизацию, затем лонг",
+        #             ],
+        #         ))
 
         # 14. VOL DIVERGENCE — объём аномальный + OI падает (only down/neutral)
         if vol_z > Z_MODERATE and oi_chg < -3 and abs(price_chg) > 2 and trend != "up":
             vd_direction = "long" if price_chg < 0 else "short"
-            _vd_crash = _crash_long if vd_direction == "long" else _crash_short
-            tier = _score_to_tier(confluence + _vd_crash)
-            if tier:
-                alerts.append(_build_directional_alert(
-                    "vol_divergence", sym, short_sym, f"VOL DIVERGENCE — объём при сбросе OI",
-                    cur, velocities, confluence + _vd_crash, tier, factors,
-                    indicators=[
-                        f"Объём z: {vol_z:+.1f}, OI {oi_chg:+.1f}% — закрытие позиций",
-                        f"Направление: {'лонг (капитуляция)' if vd_direction == 'long' else 'шорт (фиксация)'}",
-                    ],
-                    action=[
-                        f"{'Искать лонг после стабилизации' if vd_direction == 'long' else 'Искать шорт от сопротивления'}",
-                    ],
-                ))
+            # Momentum filter for dynamic direction
+            if not ((vd_direction == "long" and _skip_long) or (vd_direction == "short" and _skip_short)):
+                _vd_crash = _crash_long if vd_direction == "long" else _crash_short
+                tier = _score_to_tier(confluence + _vd_crash)
+                if tier:
+                    alerts.append(_build_directional_alert(
+                        "vol_divergence", sym, short_sym, f"VOL DIVERGENCE — объём при сбросе OI",
+                        cur, velocities, confluence + _vd_crash, tier, factors,
+                        indicators=[
+                            f"Объём z: {vol_z:+.1f}, OI {oi_chg:+.1f}% — закрытие позиций",
+                            f"Направление: {'лонг (капитуляция)' if vd_direction == 'long' else 'шорт (фиксация)'}",
+                        ],
+                        action=[
+                            f"{'Искать лонг после стабилизации' if vd_direction == 'long' else 'Искать шорт от сопротивления'}",
+                        ],
+                    ))
 
         # 15. LIQ LONG FLUSH — DISABLED (unpredictable in both directions)
         # if liq_long_z > 2.5 and price_chg < -4 and oi_chg < -3:
@@ -973,7 +999,7 @@ async def check_alerts() -> list[dict]:
 
         # 16. LIQ SHORT SQUEEZE — массовые ликвидации шортов → импульс вверх
         # Caps: price < 8% and oi < 20% filter late entries
-        if liq_short_z > 3.0 and price_chg > 3 and price_chg < 8 and oi_chg < 20 and fund_z < 1.5 and trend != "down":
+        if liq_short_z > LIQ_SHORT_Z_SQUEEZE and PRICE_CHG_SQUEEZE_LO < price_chg < PRICE_CHG_SQUEEZE_HI and oi_chg < OI_CHG_SQUEEZE_CAP and fund_z < FUND_Z_SQUEEZE_CAP and trend != "down":
             tier = _score_to_tier(confluence + _crash_long)
             if tier:
                 alerts.append(_build_directional_alert(
@@ -990,7 +1016,7 @@ async def check_alerts() -> list[dict]:
 
         # 17. FUND REVERSAL — фандинг разворачивается от экстрема
         if fund_delta != 0:
-            if fund_z > 1.5 and fund_delta < -0.0005:
+            if fund_z > FUND_Z_REVERSAL and fund_delta < -FUND_DELTA_REVERSAL and not _skip_short:
                 tier = _score_to_tier(confluence + _crash_short)
                 if tier:
                     alerts.append(_build_directional_alert(
@@ -1004,7 +1030,7 @@ async def check_alerts() -> list[dict]:
                             "Готовить шорт от сопротивления",
                         ],
                     ))
-            elif fund_z < -1.5 and fund_delta > 0.0005:
+            elif fund_z < -FUND_Z_REVERSAL and fund_delta > FUND_DELTA_REVERSAL and not _skip_long:
                 tier = _score_to_tier(confluence + _crash_long)
                 if tier:
                     alerts.append(_build_directional_alert(
@@ -1022,6 +1048,95 @@ async def check_alerts() -> list[dict]:
         # 18. OI FLUSH + VOL SPIKE — DISABLED (unpredictable in both directions)
         # if oi_chg < -5 and vol_z > 1.5 and price_chg < -3:
         #     ...pass...
+
+        # === NEW SIGNALS (Phase A) ===
+        _momentum_val = md.get("momentum_value", 0)
+        _relative_vol = md.get("relative_volume", 0)
+
+        # 19. MOMENTUM DIVERGENCE — price vs composite momentum disagree
+        # Exempt from momentum filter (counter-trend by design)
+        if price_chg_5d > 3 and _momentum_val < -20:
+            tier = _score_to_tier(confluence + _crash_short)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "momentum_divergence", sym, short_sym, "MOMENTUM DIV — цена↑ momentum↓",
+                    cur, velocities, confluence + _crash_short, tier, factors,
+                    indicators=[
+                        f"Цена +{price_chg_5d:.1f}% за 5д, но momentum {_momentum_val:+.0f}",
+                        "Дивергенция цены и моментума — разворот вероятен",
+                    ],
+                    action=[
+                        "Готовить шорт от сопротивления",
+                        "Стоп выше 5d high",
+                    ],
+                ))
+        if price_chg_5d < -3 and _momentum_val > 20:
+            tier = _score_to_tier(confluence + _crash_long)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "momentum_divergence", sym, short_sym, "MOMENTUM DIV — цена↓ momentum↑",
+                    cur, velocities, confluence + _crash_long, tier, factors,
+                    indicators=[
+                        f"Цена {price_chg_5d:+.1f}% за 5д, но momentum {_momentum_val:+.0f}",
+                        "Дивергенция цены и моментума — разворот вверх вероятен",
+                    ],
+                    action=[
+                        "Искать лонг от поддержки",
+                        "Стоп ниже 5d low",
+                    ],
+                ))
+
+        # 20. VOLUME SPIKE — PERMANENTLY REMOVED
+        # Tested all variants (original, trend-aligned, 2-bar confirm, high-OI):
+        # poisons system EV from +1.58% to -0.51% when enabled.
+
+        # 21. LIQ RATIO EXTREME — skewed liquidations → reversal pressure
+        if liq_long_z > 2.5 and liq_short_z < 1.0 and price_chg < -1:
+            tier = _score_to_tier(confluence + _crash_long)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "liq_ratio_extreme", sym, short_sym, "LIQ RATIO — лонги массово ликвидированы",
+                    cur, velocities, confluence + _crash_long, tier, factors,
+                    indicators=[
+                        f"Liq long z: {liq_long_z:+.1f}, liq short z: {liq_short_z:+.1f}",
+                        "Паническая ликвидация лонгов — дно близко",
+                    ],
+                    action=[
+                        "Искать лонг после стабилизации",
+                        "Стоп ниже кластера ликвидаций",
+                    ],
+                ))
+        if liq_short_z > 2.5 and liq_long_z < 1.0 and price_chg > 1:
+            tier = _score_to_tier(confluence + _crash_short)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "liq_ratio_extreme", sym, short_sym, "LIQ RATIO — шорты массово ликвидированы",
+                    cur, velocities, confluence + _crash_short, tier, factors,
+                    indicators=[
+                        f"Liq short z: {liq_short_z:+.1f}, liq long z: {liq_long_z:+.1f}",
+                        "Short squeeze завершается — готовить шорт от top",
+                    ],
+                    action=[
+                        "Готовить шорт от сопротивления после стабилизации",
+                    ],
+                ))
+
+        # 22. FUND SPIKE — rehabilitated (extreme funding + price momentum → short)
+        if fund_z > 1.5 and price_momentum > 3 and not _skip_short:
+            tier = _score_to_tier(confluence + _crash_short)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "fund_spike", sym, short_sym, "FUND SPIKE — фандинг экстремальный",
+                    cur, velocities, confluence + _crash_short, tier, factors,
+                    indicators=[
+                        f"Фандинг z: {fund_z:+.1f} при росте цены 5d: {price_momentum:+.1f}%",
+                        "Лонги перегружены — коррекция вероятна",
+                    ],
+                    action=[
+                        "Готовить шорт от сопротивления",
+                        "Ждать разворот фандинга как подтверждение",
+                    ],
+                ))
 
         # ── STRUCTURAL ALERTS ────────────────────────────────
 
@@ -1163,10 +1278,11 @@ async def check_alerts() -> list[dict]:
     # ── ATTACH TRADE SETUPS ──────────────────────────────────
     # For each directional alert, try to build a concrete trade plan
     _directional_types = {
-            "overheat", "fund_spike", "divergence_squeeze", "div_squeeze_3d", "div_squeeze_5d",
+            "overheat", "fund_spike", "divergence_squeeze", "div_squeeze_3d",
             "divergence_top", "div_top_3d", "distribution", "overextension", "oi_buildup_stall",
             "capitulation", "liq_flush", "liq_flush_3d", "vol_divergence",
             "liq_long_flush", "liq_short_squeeze", "fund_reversal", "oi_flush_vol",
+            "momentum_divergence", "volume_spike", "liq_ratio_extreme",
         }
     for alert in alerts:
         key = alert.get("key", "")
@@ -1402,7 +1518,7 @@ _EXPECTED_DIRECTION = {
     "fund_spike": "down",
     "divergence_squeeze": "down",
     "div_squeeze_3d": "down",
-    "div_squeeze_5d": "down",
+    # "div_squeeze_5d": disabled
     "divergence_top": "down",
     "div_top_3d": "down",
     "distribution": "down",
@@ -1417,6 +1533,10 @@ _EXPECTED_DIRECTION = {
     "liq_short_squeeze": "up",
     "fund_reversal": None,  # depends on direction
     "oi_flush_vol": "up",
+    # Phase A new signals
+    "momentum_divergence": None,  # depends on direction (bidirectional)
+    "volume_spike": None,         # depends on direction (bidirectional)
+    "liq_ratio_extreme": None,    # depends on direction (bidirectional)
     # Structural / macro
     "liq_proximity": None,
     "ob_divergence": None,
@@ -1449,6 +1569,14 @@ def _expected_direction(alert: dict) -> str | None:
     if alert_type == "fund_reversal":
         title = alert.get("title", "")
         return "down" if "вниз" in title else "up" if "вверх" in title else None
+    # momentum_divergence / volume_spike / liq_ratio_extreme: bidirectional
+    if alert_type in ("momentum_divergence", "volume_spike", "liq_ratio_extreme"):
+        title = alert.get("title", "")
+        if "SHORT" in title or "шорт" in title.lower() or "↓" in title:
+            return "down"
+        if "LONG" in title or "лонг" in title.lower() or "↑" in title:
+            return "up"
+        return "up" if alert.get("price_change_pct", 0) < 0 else "down"
     return None
 
 

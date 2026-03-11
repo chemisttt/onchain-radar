@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 
 from db import get_db
+from services.signal_conditions import SignalInput, detect_signals, compute_confluence as _shared_confluence
 
 log = logging.getLogger("backtest_service")
 
@@ -72,106 +73,8 @@ def _score_to_tier(score: int) -> str | None:
     return None
 
 
-def _compute_confluence(
-    oi_z: float, fund_z: float, liq_z: float, vol_z: float,
-    price_momentum: float, z_accel: float,
-    liq_long_z: float, liq_short_z: float,
-    rv_regime: str | None,
-    direction: str | None = None,
-    funding_rate: float = 0.0,
-    trend: str = "neutral",
-) -> tuple[int, list[str]]:
-    """Confluence scoring with momentum, z-acceleration, liq directional, RV regime, trend."""
-    score = 0
-    factors = []
-
-    # 1-2. OI extreme
-    if abs(oi_z) > Z_STRONG:
-        score += 2
-        factors.append(f"OI_z extreme ({oi_z:+.1f})")
-    elif abs(oi_z) > Z_MODERATE:
-        score += 1
-        factors.append(f"OI_z elevated ({oi_z:+.1f})")
-
-    # 3-4. Funding extreme
-    if abs(fund_z) > Z_STRONG:
-        score += 2
-        factors.append(f"Fund_z extreme ({fund_z:+.1f})")
-    elif abs(fund_z) > Z_MODERATE:
-        score += 1
-        factors.append(f"Fund_z elevated ({fund_z:+.1f})")
-
-    # 5. Liq extreme
-    if abs(liq_z) > Z_MODERATE:
-        score += 1
-        factors.append(f"Liq_z ({liq_z:+.1f})")
-
-    # 6. Volume extreme
-    if abs(vol_z) > Z_MODERATE:
-        score += 1
-        factors.append(f"Vol_z ({vol_z:+.1f})")
-
-    # 7. Price momentum (5d return extreme: >5% or <-5%)
-    if abs(price_momentum) > 5:
-        score += 1
-        factors.append(f"Price 5d {price_momentum:+.1f}%")
-
-    # 8. Z-score acceleration (biggest z moved >1 in 3 days)
-    if abs(z_accel) > 1.0:
-        score += 1
-        factors.append(f"Z-accel {z_accel:+.1f}")
-
-    # 9. Liq directional (one side getting liquidated hard)
-    if liq_long_z > Z_MODERATE or liq_short_z > Z_MODERATE:
-        score += 1
-        side = "longs" if liq_long_z > liq_short_z else "shorts"
-        factors.append(f"Liq {side} spike")
-
-    # 10. RV regime (extreme vol = regime shift)
-    if rv_regime in ("low", "high"):
-        score += 1
-        factors.append(f"RV {rv_regime}")
-
-    # Bonus: funding direction confirmation
-    if direction == "short" and funding_rate > 0:
-        score += 1
-        factors.append("Fund confirms short")
-    elif direction == "long" and funding_rate < 0:
-        score += 1
-        factors.append("Fund confirms long")
-
-    # Bonus: trend alignment (+1 with trend, -1 counter-trend)
-    if direction and trend != "neutral":
-        if (direction == "long" and trend == "up") or (direction == "short" and trend == "down"):
-            score += 1
-            factors.append(f"Trend aligned ({trend})")
-        else:
-            score -= 1
-            factors.append(f"Counter-trend ({trend})")
-
-    # Crash penalty: if price dropping hard AND multiple metrics extreme in same direction,
-    # reduce confluence (prevents TRIGGER longs into falling knife)
-    if direction == "long" and price_momentum < -5:
-        extreme_count = sum([
-            abs(oi_z) > 2.0,
-            abs(liq_z) > 2.0,
-            abs(vol_z) > 2.0,
-        ])
-        if extreme_count >= 2:
-            score -= 2
-            factors.append("Crash penalty (multi-extreme)")
-
-    if direction == "short" and price_momentum > 5:
-        extreme_count = sum([
-            abs(oi_z) > 2.0,
-            abs(liq_z) > 2.0,
-            abs(vol_z) > 2.0,
-        ])
-        if extreme_count >= 2:
-            score -= 2
-            factors.append("Crash penalty (multi-extreme)")
-
-    return score, factors
+# Confluence: using shared module (signal_conditions.py)
+# Local _compute_confluence removed — replaced by _shared_confluence(SignalInput, direction)
 
 
 def _cluster_alerts(alerts: list[dict], max_gap_days: int = CLUSTER_GAP_DAYS) -> list[dict]:
@@ -226,6 +129,15 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
     liq_longs = [r["liquidations_long"] or 0 for r in rows]
     liq_shorts = [r["liquidations_short"] or 0 for r in rows]
     volumes = [r["volume_usd"] or 0 for r in rows]
+
+    # Preload momentum data
+    momentum_rows = await db.execute_fetchall(
+        "SELECT date, momentum_value, relative_volume FROM daily_momentum WHERE symbol = ? ORDER BY date ASC",
+        (symbol,),
+    )
+    momentum_by_date: dict[str, tuple[float, float]] = {}
+    for r in momentum_rows:
+        momentum_by_date[r["date"]] = (r["momentum_value"] or 0.0, r["relative_volume"] or 0.0)
 
     # Preload RV data (daily_rv) into dict by date
     rv_rows = await db.execute_fetchall(
@@ -323,109 +235,32 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
         if i >= 3:
             vol_declining_3d = volumes[i] < volumes[i-1] < volumes[i-2]
 
-        # Check conditions — EVENT-based signals only (proven profitable)
-        triggered: list[tuple[str, str]] = []
+        # Momentum data from daily_momentum table
+        mom_data = momentum_by_date.get(date, (0.0, 0.0))
+        _momentum_value, _relative_volume = mom_data
 
-        # === SHORT signals (TOP detection) ===
+        # Build shared SignalInput for this bar
+        _has_fd = i >= 3
+        _fund_delta = (fundings[i] - fundings[i - 3]) if _has_fd else 0.0
+        _inp = SignalInput(
+            oi_z=oi_z, fund_z=fund_z, liq_z=liq_z, vol_z=vol_z,
+            price_chg=price_chg, oi_chg=oi_chg,
+            price_chg_3d=price_chg_3d, oi_chg_3d=oi_chg_3d,
+            price_vs_sma=price_vs_sma, trend=trend,
+            funding_rate=fundings[i],
+            liq_long_z=liq_long_z, liq_short_z=liq_short_z,
+            price_momentum=price_momentum, z_accel=z_accel,
+            vol_declining_3d=vol_declining_3d,
+            fund_delta_3d=_fund_delta, has_fund_delta=_has_fd,
+            momentum_value=_momentum_value, relative_volume=_relative_volume,
+            price_chg_5d=price_chg_5d,
+            rv_regime=rv_regime,
+        )
 
-        # 1. OVERHEAT — OI + funding both elevated (RELAXED: fund > 0.8)
-        if oi_z > 1.5 and fund_z > 0.8:
-            triggered.append(("overheat", "short"))
-
-        # 2. FUNDING SPIKE — funding extreme without OI support → crowded longs
-        if fund_z > 1.5 and price_momentum > 3:
-            triggered.append(("fund_spike", "short"))
-
-        # 3. DIVERGENCE SQUEEZE 1D (OI↑ Price↓) — tightened
-        if oi_chg > 5 and price_chg < -2 and fund_z > 0 and trend != "down":
-            triggered.append(("div_squeeze_1d", "short"))
-
-        # 4. DIVERGENCE SQUEEZE 3D (slower buildup) — only if funding not already extreme short
-        if oi_chg_3d > 5 and price_chg_3d < -2 and fund_z > -1.0:
-            triggered.append(("div_squeeze_3d", "short"))
-
-        # 5. DIVERGENCE SQUEEZE 5D (even slower)
-        if oi_chg_5d > 8 and price_chg_5d < -3:
-            triggered.append(("div_squeeze_5d", "short"))
-
-        # 6. DIVERGENCE TOP 1D (OI↓ Price↑ — smart money exiting)
-        if oi_chg < -3 and price_chg > 2:
-            triggered.append(("div_top_1d", "short"))
-
-        # 7. DIVERGENCE TOP 3D (relaxed: -5→-4, 3→2.5)
-        if oi_chg_3d < -4 and price_chg_3d > 2.5:
-            triggered.append(("div_top_3d", "short"))
-
-        # 8. DISTRIBUTION — price up but volume declining (relaxed from 2 to 1.5)
-        if price_chg_3d > 1.5 and vol_declining_3d and trend == "up":
-            triggered.append(("distribution", "short"))
-
-        # 9. OVEREXTENSION — price stretched far above SMA
-        if price_vs_sma > 8 and fund_z > 0.5:
-            triggered.append(("overextension", "short"))
-
-        # 10. OI BUILDUP STALL — OI rising but price stalls → trap setup (relaxed)
-        if oi_chg_3d > 4 and abs(price_chg_3d) < 2 and fund_z > 0.3:
-            triggered.append(("oi_buildup_stall", "short"))
-
-        # === LONG signals (BOTTOM detection) ===
-
-        # 11. CAPITULATION — both washed out (not in downtrend — avoid falling knife)
-        if oi_z < -1.5 and fund_z < -0.8 and trend != "down":
-            triggered.append(("capitulation", "long"))
-
-        # 12. LIQ FLUSH — cascade liquidation + OI dump (uptrend + deep momentum washout)
-        if liq_z > 2.0 and price_chg < -5 and oi_chg < -3 and trend == "up" and price_momentum < -5:
-            triggered.append(("liq_flush", "long"))
-
-        # 13. LIQ FLUSH 3D — slower flush (tightened: uptrend + funding washed + negative momentum)
-        if liq_z > 2.0 and price_chg_3d < -8 and oi_chg_3d < -5 and trend == "up" and fund_z < 0 and price_momentum < -5:
-            triggered.append(("liq_flush_3d", "long"))
-
-        # 14. VOLUME DIVERGENCE — volume spike but OI drops (closing, not opening)
-        # Only in down/neutral — contrarian long fails in uptrends
-        if vol_z > Z_MODERATE and oi_chg < -3 and abs(price_chg) > 2 and trend != "up":
-            direction = "long" if price_chg < 0 else "short"
-            triggered.append(("vol_divergence", direction))
-
-        # 15. LIQ LONG FLUSH — DISABLED (unpredictable: WR 4.5% as long, 21% as short)
-        # Neither direction works — cascading liquidations are noise
-        # if liq_long_z > 2.5 and price_chg < -4 and oi_chg < -3 and price_momentum > 0:
-        #     triggered.append(("liq_long_flush", "short"))
-
-        # 16. LIQ SHORT SQUEEZE — shorts liquidated massively → momentum long
-        # Caps: price_chg < 8 and oi_chg < 20 filter out late entries where squeeze already played out
-        if liq_short_z > 3.0 and price_chg > 3 and price_chg < 8 and oi_chg < 20 and fund_z < 1.5 and trend != "down":
-            triggered.append(("liq_short_squeeze", "long"))
-
-        # 17. FUNDING REVERSAL — funding reverses from extreme
-        if i >= 3:
-            fund_3d_ago = fundings[i - 3]
-            fund_delta = fundings[i] - fund_3d_ago
-            if fund_z > 1.5 and fund_delta < -0.0005:
-                triggered.append(("fund_reversal", "short"))
-            if fund_z < -1.5 and fund_delta > 0.0005:
-                triggered.append(("fund_reversal", "long"))
-
-        # 18. VOL COMPRESSION → EXPANSION — DISABLED (WR 16.7%, unreliable)
-        # if rv_today and rv_prev and rv_prev > 0:
-        #     rv_ratio = rv_today / rv_prev
-        #     if rv_ratio > 1.5 and rv_prev < rv_median_val:
-        #         direction = "long" if price_chg > 0 else "short"
-        #         triggered.append(("vol_expansion", direction))
-
-        # 19. OI FLUSH + VOLUME SPIKE — DISABLED (unpredictable: WR 14% long, 19% short)
-        # if oi_chg < -5 and vol_z > 1.5 and price_chg < -3:
-        #     triggered.append(("oi_flush_vol", "short"))
+        triggered = detect_signals(_inp)
 
         for alert_type, direction in triggered:
-            # Compute confluence with direction-aware bonuses + trend
-            confluence, factors = _compute_confluence(
-                oi_z, fund_z, liq_z, vol_z, price_momentum, z_accel,
-                liq_long_z, liq_short_z, rv_regime,
-                direction=direction, funding_rate=fundings[i],
-                trend=trend,
-            )
+            confluence, factors = _shared_confluence(_inp, direction)
 
             tier = _score_to_tier(confluence)
             if not tier:
@@ -434,6 +269,14 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
             # OI tier filter: require higher confluence for altcoins
             if symbol not in TOP_OI_SYMBOLS and confluence < ALT_MIN_CONFLUENCE:
                 continue
+
+            # Momentum filter: skip signals against the trend
+            # Counter-trend signals exempt: distribution, momentum_divergence, fund_spike
+            if alert_type not in ("distribution", "momentum_divergence", "fund_spike"):
+                if direction == "long" and trend == "down":
+                    continue
+                if direction == "short" and trend == "up":
+                    continue
 
             # Per-symbol cooldown
             cd_key = f"{alert_type}:{symbol}"
@@ -683,6 +526,15 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
     rv_all = [v for v in rv_by_date.values() if v > 0]
     rv_median_val = _median(rv_all) if rv_all else 0.0
 
+    # Momentum data for new signals
+    momentum_rows_4h = await db.execute_fetchall(
+        "SELECT date, momentum_value, relative_volume FROM daily_momentum WHERE symbol = ? ORDER BY date ASC",
+        (symbol,),
+    )
+    mom_by_date_4h: dict[str, tuple[float, float]] = {}
+    for r in momentum_rows_4h:
+        mom_by_date_4h[r["date"]] = (r["momentum_value"] or 0.0, r["relative_volume"] or 0.0)
+
     # 4h OHLCV candles for MFE/MAE
     ohlcv_rows = await db.execute_fetchall(
         "SELECT ts, high, low FROM ohlcv_4h WHERE symbol = ? ORDER BY ts ASC",
@@ -771,94 +623,31 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
             elif rv_today > rv_median_val * 1.5:
                 rv_regime = "high"
 
-        triggered: list[tuple[str, str]] = []
+        # Momentum data (daily-level, same for all 4h bars in a day)
+        _mom_4h = mom_by_date_4h.get(date_str, (0.0, 0.0))
+        _mom_val_4h, _rv_4h = _mom_4h
 
-        # === SHORT signals (thresholds scaled for 4h) ===
-        if oi_z > 1.5 and fund_z > 0.8:
-            triggered.append(("overheat", "short"))
-
-        if fund_z > 1.5 and price_momentum > 3:
-            triggered.append(("fund_spike", "short"))
-
-        # 1-candle div squeeze (tightened: oi>3%, price<-1.5%, fund>0, not in downtrend)
-        if oi_chg > 3 and price_chg < -1.5 and fund_z > 0 and trend != "down":
-            triggered.append(("div_squeeze_1d", "short"))
-
-        # 6-candle (~1d) div squeeze ≈ daily 1d — only if funding not extreme short
-        if oi_chg_6 > 3 and price_chg_6 < -1 and fund_z > -1.0:
-            triggered.append(("div_squeeze_3d", "short"))
-
-        # 18-candle (~3d) div squeeze ≈ daily 3d
-        if oi_chg_18 > 5 and price_chg_18 < -2:
-            triggered.append(("div_squeeze_5d", "short"))
-
-        # Div top 6-candle
-        if oi_chg_6 < -3 and price_chg_6 > 2:
-            triggered.append(("div_top_1d", "short"))
-
-        # Div top 18-candle (relaxed)
-        if oi_chg_18 < -4 and price_chg_18 > 2.5:
-            triggered.append(("div_top_3d", "short"))
-
-        if price_chg_18 > 1.5 and vol_declining and trend == "up":
-            triggered.append(("distribution", "short"))
-
-        if price_vs_sma > 8 and fund_z > 0.5:
-            triggered.append(("overextension", "short"))
-
-        if oi_chg_18 > 4 and abs(price_chg_18) < 2 and fund_z > 0.3:
-            triggered.append(("oi_buildup_stall", "short"))
-
-        # === LONG signals ===
-        if oi_z < -1.5 and fund_z < -0.8 and trend != "down":
-            triggered.append(("capitulation", "long"))
-
-        if liq_z > 2.0 and price_chg_6 < -5 and oi_chg_6 < -3 and trend == "up" and price_momentum < -5:
-            triggered.append(("liq_flush", "long"))
-
-        if liq_z > 2.0 and price_chg_18 < -8 and oi_chg_18 < -5 and trend == "up" and fund_z < 0 and price_momentum < -5:
-            triggered.append(("liq_flush_3d", "long"))
-
-        if vol_z > Z_MODERATE and oi_chg_6 < -3 and abs(price_chg_6) > 2 and trend != "up":
-            direction = "long" if price_chg_6 < 0 else "short"
-            triggered.append(("vol_divergence", direction))
-
-        # liq_long_flush — DISABLED
-        # if liq_long_z > 2.5 and price_chg_6 < -4 and oi_chg_6 < -3 and price_momentum > 0:
-        #     triggered.append(("liq_long_flush", "short"))
-
-        if liq_short_z > 3.0 and price_chg_6 > 4 and price_chg_6 < 10 and oi_chg_6 < 20 and fund_z < 1.5 and trend != "down":
-            triggered.append(("liq_short_squeeze", "long"))
-
-        if i >= 18:
-            fund_18ago = fundings[i - 18]
-            fund_delta = fundings[i] - fund_18ago
-            if fund_z > 1.5 and fund_delta < -0.0005:
-                triggered.append(("fund_reversal", "short"))
-            if fund_z < -1.5 and fund_delta > 0.0005:
-                triggered.append(("fund_reversal", "long"))
-
-        # VOL COMPRESSION → EXPANSION — DISABLED (WR 16.7%, unreliable)
-        # if rv_today and rv_median_val > 0:
-        #     rv_prev_idx = max(0, i - 6)
-        #     rv_prev_date = datetime.utcfromtimestamp(timestamps[rv_prev_idx]).strftime("%Y-%m-%d")
-        #     rv_prev = rv_by_date.get(rv_prev_date)
-        #     if rv_prev and rv_prev > 0:
-        #         rv_ratio = rv_today / rv_prev
-        #         if rv_ratio > 1.5 and rv_prev < rv_median_val:
-        #             direction = "long" if price_chg_6 > 0 else "short"
-        #             triggered.append(("vol_expansion", direction))
-
-        # oi_flush_vol — DISABLED
-        # if oi_chg_6 < -5 and vol_z > 1.5 and price_chg_6 < -3:
-        #     triggered.append(("oi_flush_vol", "short"))
+        # Build SignalInput from 4h metrics (6-candle ≈ 1d, 18-candle ≈ 3d, 30-candle ≈ 5d)
+        _has_fd_4h = i >= 18
+        _fund_delta_4h = (fundings[i] - fundings[i - 18]) if _has_fd_4h else 0.0
+        _inp_4h_det = SignalInput(
+            oi_z=oi_z, fund_z=fund_z, liq_z=liq_z, vol_z=vol_z,
+            price_chg=price_chg_6, oi_chg=oi_chg_6,
+            price_chg_3d=price_chg_18, oi_chg_3d=oi_chg_18,
+            price_vs_sma=price_vs_sma, trend=trend,
+            funding_rate=fundings[i],
+            liq_long_z=liq_long_z, liq_short_z=liq_short_z,
+            price_momentum=price_momentum, z_accel=z_accel,
+            vol_declining_3d=vol_declining,
+            fund_delta_3d=_fund_delta_4h, has_fund_delta=_has_fd_4h,
+            momentum_value=_mom_val_4h, relative_volume=_rv_4h,
+            price_chg_5d=price_momentum,
+            rv_regime=rv_regime,
+        )
+        triggered = detect_signals(_inp_4h_det)
 
         for alert_type, direction in triggered:
-            confluence, factors = _compute_confluence(
-                oi_z, fund_z, liq_z, vol_z, price_momentum, z_accel,
-                liq_long_z, liq_short_z, rv_regime,
-                direction=direction, funding_rate=fundings[i], trend=trend,
-            )
+            confluence, factors = _shared_confluence(_inp_4h_det, direction)
 
             tier = _score_to_tier(confluence)
             if not tier or confluence < CONFLUENCE_SIGNAL:
@@ -867,6 +656,14 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
             # OI tier filter: require higher confluence for altcoins
             if symbol not in TOP_OI_SYMBOLS and confluence < ALT_MIN_CONFLUENCE:
                 continue
+
+            # Momentum filter: skip signals against the trend
+            # Counter-trend signals exempt: distribution, momentum_divergence, fund_spike
+            if alert_type not in ("distribution", "momentum_divergence", "fund_spike"):
+                if direction == "long" and trend == "down":
+                    continue
+                if direction == "short" and trend == "up":
+                    continue
 
             cd_key = f"{alert_type}:{symbol}"
             if cd_key in cooldowns:
@@ -918,6 +715,259 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
 
     # Cluster nearby same-direction 4h signals
     alerts = _cluster_alerts(alerts, max_gap_days=1)
+    return alerts
+
+
+async def simulate_alerts_4h_detection(symbol: str, days: int = 1095) -> list[dict]:
+    """4h signal detection for comparison with daily detection.
+
+    Same thresholds as daily (via detect_signals), same tier rules (SETUP allowed),
+    same daily cap. Only detection timeframe changes: 4h bars instead of daily.
+
+    Lookback mappings: 6 candles ≈ 1d, 18 ≈ 3d, 30 ≈ 5d.
+    Z-score window: 2190 bars (365d × 6/day).
+    SMA: 120 bars (20d equivalent).
+    """
+    db = get_db()
+
+    rows = await db.execute_fetchall(
+        """SELECT ts, close_price, open_interest_usd, oi_binance_usd, funding_rate,
+                  liquidations_long, liquidations_short, liquidations_delta, volume_usd
+           FROM derivatives_4h
+           WHERE symbol = ?
+           ORDER BY ts ASC""",
+        (symbol,),
+    )
+    if not rows or len(rows) < MIN_POINTS_4H + 10:
+        return []
+
+    timestamps = [r["ts"] // 1000 for r in rows]  # seconds
+    prices = [r["close_price"] or 0 for r in rows]
+    ois = [(r["oi_binance_usd"] or 0) or (r["open_interest_usd"] or 0) for r in rows]
+    fundings = [r["funding_rate"] or 0 for r in rows]
+    liq_deltas = [r["liquidations_delta"] or 0 for r in rows]
+    liq_longs = [r["liquidations_long"] or 0 for r in rows]
+    liq_shorts = [r["liquidations_short"] or 0 for r in rows]
+    volumes = [r["volume_usd"] or 0 for r in rows]
+
+    # RV data for regime
+    rv_rows = await db.execute_fetchall(
+        "SELECT date, rv_30d FROM daily_rv WHERE symbol = ? ORDER BY date ASC",
+        (symbol,),
+    )
+    rv_by_date: dict[str, float] = {r["date"]: r["rv_30d"] for r in rv_rows if r["rv_30d"]}
+    rv_all = [v for v in rv_by_date.values() if v > 0]
+    rv_median_val = _median(rv_all) if rv_all else 0.0
+
+    # Momentum data (daily-level)
+    momentum_rows = await db.execute_fetchall(
+        "SELECT date, momentum_value, relative_volume FROM daily_momentum WHERE symbol = ? ORDER BY date ASC",
+        (symbol,),
+    )
+    mom_by_date: dict[str, tuple[float, float]] = {}
+    for r in momentum_rows:
+        mom_by_date[r["date"]] = (r["momentum_value"] or 0.0, r["relative_volume"] or 0.0)
+
+    # 4h OHLCV candles for MFE/MAE
+    ohlcv_rows = await db.execute_fetchall(
+        "SELECT ts, high, low FROM ohlcv_4h WHERE symbol = ? ORDER BY ts ASC",
+        (symbol,),
+    )
+    candle_data = [(r["ts"] // 1000, r["high"], r["low"]) for r in ohlcv_rows]
+
+    total = len(rows)
+    candles_per_day = 6
+    lookback_candles = days * candles_per_day
+    warmup_end = max(MIN_POINTS_4H, total - lookback_candles)
+
+    SMA_PERIOD_4H = 120  # ~20 days
+
+    # Pre-compute OI z-scores for acceleration
+    oi_zscores: list[float] = []
+    for i in range(total):
+        start = max(0, i - Z_WINDOW_4H + 1)
+        oi_zscores.append(_zscore(ois[start:i + 1]))
+
+    alerts: list[dict] = []
+    cooldowns: dict[str, int] = {}  # "type:symbol" → last fired index
+
+    for i in range(warmup_end, total):
+        price = prices[i]
+        if price <= 0 or i == 0:
+            continue
+
+        ts_sec = timestamps[i]
+
+        # Trend filter
+        sma = _sma(prices[:i + 1], SMA_PERIOD_4H)
+        price_vs_sma = ((price - sma) / sma * 100) if sma > 0 else 0
+        if price_vs_sma > 2:
+            trend = "up"
+        elif price_vs_sma < -2:
+            trend = "down"
+        else:
+            trend = "neutral"
+
+        # Rolling z-scores
+        start = max(0, i - Z_WINDOW_4H + 1)
+        oi_z = oi_zscores[i]
+        fund_z = _zscore(fundings[start:i + 1])
+        liq_z = _zscore(liq_deltas[start:i + 1])
+        vol_z = _zscore(volumes[start:i + 1])
+        liq_long_z = _zscore(liq_longs[start:i + 1])
+        liq_short_z = _zscore(liq_shorts[start:i + 1])
+
+        # 6-candle (~1d) changes — mapped to daily 1d thresholds
+        idx_6 = max(0, i - 6)
+        price_chg = ((price - prices[idx_6]) / prices[idx_6] * 100) if prices[idx_6] > 0 else 0
+        oi_chg = ((ois[i] - ois[idx_6]) / ois[idx_6] * 100) if ois[idx_6] > 0 else 0
+
+        # 18-candle (~3d) changes
+        idx_18 = max(0, i - 18)
+        price_chg_3d = ((price - prices[idx_18]) / prices[idx_18] * 100) if prices[idx_18] > 0 else 0
+        oi_chg_3d = ((ois[i] - ois[idx_18]) / ois[idx_18] * 100) if ois[idx_18] > 0 else 0
+
+        # 30-candle (~5d) momentum
+        idx_30 = max(0, i - 30)
+        price_momentum = ((price - prices[idx_30]) / prices[idx_30] * 100) if prices[idx_30] > 0 else 0
+
+        # Z-accel (18 candles ≈ 3d)
+        z_accel = oi_z - oi_zscores[max(0, i - 18)] if i >= 18 else 0.0
+
+        # Volume declining (6-bar steps for 3d equivalent)
+        vol_declining = False
+        if i >= 18:
+            vol_declining = volumes[i] < volumes[i - 6] < volumes[i - 12]
+
+        # RV regime (date-based lookup)
+        date_str = datetime.utcfromtimestamp(ts_sec).strftime("%Y-%m-%d")
+        rv_today = rv_by_date.get(date_str)
+        rv_regime: str | None = None
+        if rv_today and rv_median_val > 0:
+            if rv_today < rv_median_val * 0.6:
+                rv_regime = "low"
+            elif rv_today > rv_median_val * 1.5:
+                rv_regime = "high"
+
+        # Momentum data (daily-level, same for all 4h bars in a day)
+        _mom = mom_by_date.get(date_str, (0.0, 0.0))
+        _mom_val, _rv = _mom
+
+        # Build SignalInput (6-candle ≈ 1d, 18-candle ≈ 3d, 30-candle ≈ 5d)
+        _has_fd = i >= 18
+        _fund_delta = (fundings[i] - fundings[i - 18]) if _has_fd else 0.0
+        _inp = SignalInput(
+            oi_z=oi_z, fund_z=fund_z, liq_z=liq_z, vol_z=vol_z,
+            price_chg=price_chg, oi_chg=oi_chg,
+            price_chg_3d=price_chg_3d, oi_chg_3d=oi_chg_3d,
+            price_vs_sma=price_vs_sma, trend=trend,
+            funding_rate=fundings[i],
+            liq_long_z=liq_long_z, liq_short_z=liq_short_z,
+            price_momentum=price_momentum, z_accel=z_accel,
+            vol_declining_3d=vol_declining,
+            fund_delta_3d=_fund_delta, has_fund_delta=_has_fd,
+            momentum_value=_mom_val, relative_volume=_rv,
+            price_chg_5d=price_momentum,
+            rv_regime=rv_regime,
+        )
+        triggered = detect_signals(_inp)
+
+        for alert_type, direction in triggered:
+            confluence, factors = _shared_confluence(_inp, direction)
+
+            tier = _score_to_tier(confluence)
+            if not tier:
+                continue
+
+            # OI tier filter: require higher confluence for altcoins
+            if symbol not in TOP_OI_SYMBOLS and confluence < ALT_MIN_CONFLUENCE:
+                continue
+
+            # Momentum filter: skip signals against the trend
+            if alert_type not in ("distribution", "momentum_divergence", "fund_spike"):
+                if direction == "long" and trend == "down":
+                    continue
+                if direction == "short" and trend == "up":
+                    continue
+
+            # Per-symbol cooldown: 6 candles (1 day)
+            cd_key = f"{alert_type}:{symbol}"
+            if cd_key in cooldowns:
+                if (i - cooldowns[cd_key]) < COOLDOWN_CANDLES_4H:
+                    continue
+            cooldowns[cd_key] = i
+
+            # Forward returns: +6 candles (1d), +18 (3d), +42 (7d)
+            p_6 = prices[i + 6] if i + 6 < total else None
+            p_18 = prices[i + 18] if i + 18 < total else None
+            p_42 = prices[i + 42] if i + 42 < total else None
+
+            r_6 = ((p_6 - price) / price * 100) if p_6 else None
+            r_18 = ((p_18 - price) / price * 100) if p_18 else None
+            r_42 = ((p_42 - price) / price * 100) if p_42 else None
+
+            mfe_return, mfe_price = _compute_mfe_4h(candle_data, ts_sec, direction, price)
+            mae_return = _compute_mae_4h(candle_data, ts_sec, direction, price)
+
+            snapped = (ts_sec // 14400) * 14400
+
+            alerts.append({
+                "time": snapped,
+                "type": alert_type,
+                "tier": tier,
+                "confluence": confluence,
+                "fired_at": datetime.utcfromtimestamp(ts_sec).strftime("%Y-%m-%dT%H:%M:%S"),
+                "entry_price": price,
+                "direction": direction,
+                "price_1d": p_6,
+                "price_3d": p_18,
+                "price_7d": p_42,
+                "return_1d": round(r_6, 2) if r_6 is not None else None,
+                "return_3d": round(r_18, 2) if r_18 is not None else None,
+                "return_7d": round(r_42, 2) if r_42 is not None else None,
+                "mfe_return": round(mfe_return, 2) if mfe_return is not None else None,
+                "mfe_price": round(mfe_price, 2) if mfe_price is not None else None,
+                "mae_return": round(mae_return, 2) if mae_return is not None else None,
+                "simulated": True,
+                "timeframe": "4h",
+                "factors": factors[:5],
+                "zscores": {
+                    "oi": round(oi_z, 2),
+                    "funding": round(fund_z, 2),
+                    "liq": round(liq_z, 2),
+                    "volume": round(vol_z, 2),
+                },
+                "features": {
+                    "price_chg": round(price_chg, 2),
+                    "oi_chg": round(oi_chg, 2),
+                    "price_chg_3d": round(price_chg_3d, 2),
+                    "oi_chg_3d": round(oi_chg_3d, 2),
+                    "price_chg_5d": round(price_momentum, 2),
+                    "price_momentum": round(price_momentum, 2),
+                    "price_vs_sma": round(price_vs_sma, 2),
+                    "trend": trend,
+                    "liq_long_z": round(liq_long_z, 2),
+                    "liq_short_z": round(liq_short_z, 2),
+                    "fund_rate": round(fundings[i], 6),
+                },
+            })
+
+    # Cluster nearby same-direction 4h signals (~1 day gap)
+    alerts = _cluster_alerts(alerts, max_gap_days=1)
+
+    # Daily cap: 3 signals/symbol/day (same as daily detection)
+    MAX_SIGNALS_PER_DAY = 3
+    from collections import defaultdict
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for a in alerts:
+        day = a["fired_at"][:10]
+        by_date[day].append(a)
+    capped_alerts: list[dict] = []
+    for day, day_alerts in by_date.items():
+        day_alerts.sort(key=lambda x: -x["confluence"])
+        capped_alerts.extend(day_alerts[:MAX_SIGNALS_PER_DAY])
+    alerts = capped_alerts
+
     return alerts
 
 
