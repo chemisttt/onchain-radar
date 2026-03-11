@@ -83,6 +83,18 @@ async def get_backtest(
         for r in reversed(rows)
     ]
 
+    # Trading eligibility: signal types with exit strategies
+    from services.trading_service import ADAPTIVE_EXIT, BLOCKED_SIGNAL_TYPES
+
+    def _is_tradeable(alert: dict) -> bool:
+        atype = alert.get("type") or alert.get("alert_type", "")
+        direction = alert.get("direction") or alert.get("expected_direction")
+        return (
+            atype in ADAPTIVE_EXIT
+            and atype not in BLOCKED_SIGNAL_TYPES
+            and direction is not None
+        )
+
     # Real alerts from alert_tracking (exclude structural-only types)
     _EXCLUDED_REAL = {"liq_proximity", "ob_divergence"}
     min_ts = candles[0]["time"] if candles else 0
@@ -123,14 +135,15 @@ async def get_backtest(
         if dedup_key in _seen_real:
             continue
         _seen_real.add(dedup_key)
-        real_alerts.append({
+        direction = {"up": "long", "down": "short"}.get(a["expected_direction"], a["expected_direction"])
+        alert_obj = {
             "time": snapped,
             "type": atype,
             "tier": a["tier"],
             "confluence": a["confluence"],
             "fired_at": a["fired_at"],
             "entry_price": a["entry_price"],
-            "direction": {"up": "long", "down": "short"}.get(a["expected_direction"], a["expected_direction"]),
+            "direction": direction,
             "price_1d": a["price_1d"],
             "price_3d": a["price_3d"],
             "price_7d": a["price_7d"],
@@ -139,7 +152,10 @@ async def get_backtest(
             "return_7d": a["return_7d"],
             "simulated": False,
             "timeframe": "1d",
-        })
+        }
+        alert_obj["tradeable"] = _is_tradeable(alert_obj)
+        alert_obj["exit_strategy"] = ADAPTIVE_EXIT.get(atype) if alert_obj["tradeable"] else None
+        real_alerts.append(alert_obj)
 
     sim_days = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
 
@@ -172,6 +188,12 @@ async def get_backtest(
         min_time = candles[0]["time"]
         max_time = candles[-1]["time"]
         simulated = [a for a in simulated if min_time <= a["time"] <= max_time]
+
+    # Add tradeable flag to simulated alerts
+    for a in simulated:
+        if "tradeable" not in a:
+            a["tradeable"] = _is_tradeable(a)
+            a["exit_strategy"] = ADAPTIVE_EXIT.get(a["type"]) if a["tradeable"] else None
 
     # Merge and sort by time
     all_alerts = real_alerts + simulated
@@ -235,6 +257,12 @@ async def get_backtest(
             "pf": round(gains / losses, 2) if losses > 0 else (99.0 if gains > 0 else 0),
         }
 
+    # Tradeable-only stats
+    tradeable_alerts = [a for a in all_alerts if a.get("tradeable")]
+    tradeable_with_returns = [a for a in tradeable_alerts if _directional_return(a) is not None]
+    tradeable_wins = sum(1 for a in tradeable_with_returns if _is_win(a))
+    tradeable_total_return = sum(_directional_return(a) or 0 for a in tradeable_with_returns)
+
     stats = {
         "total_signals": len(all_alerts),
         "real_signals": len(real_alerts),
@@ -246,6 +274,11 @@ async def get_backtest(
         "mfe_wr": round(mfe_wins / len(with_returns) * 100, 1) if with_returns else 0,
         "avg_return": round(total_return / len(with_returns), 2) if with_returns else 0,
         "by_type": by_type,
+        "tradeable_signals": len(tradeable_alerts),
+        "tradeable_with_returns": len(tradeable_with_returns),
+        "tradeable_wins": tradeable_wins,
+        "tradeable_wr": round(tradeable_wins / len(tradeable_with_returns) * 100, 1) if tradeable_with_returns else 0,
+        "tradeable_avg_return": round(tradeable_total_return / len(tradeable_with_returns), 2) if tradeable_with_returns else 0,
     }
 
     # Price structure

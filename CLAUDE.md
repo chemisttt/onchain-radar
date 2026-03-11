@@ -29,7 +29,9 @@ Two mirrored files define the same signal logic:
 **RULE**: Any threshold/condition change MUST be applied to BOTH files (3 sections: daily backtest, 4h backtest, live).
 
 ### Alert Pipeline
-`market_analyzer.check_alerts()` → `telegram_service` (cooldown check + send) → `record_alert()` → `alert_tracking` DB → `derivatives.py` router (direction mapping) → frontend chart
+`market_analyzer.check_alerts()` → `telegram_service` (cache_signal ALL → cooldown filter → send → record_alert) → `trading_service.on_signal()` (fire-and-forget) → HL market order + hard SL → `trades` DB → Telegram notify
+
+Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → frontend chart
 
 ### Key Constants
 - `TOP_OI_SYMBOLS` — BTC, ETH, SOL, XRP, BNB, DOGE, TRX, UNI, SUI, ADA
@@ -53,6 +55,7 @@ Two mirrored files define the same signal logic:
 - `funding_service` — Rates from 11+ exchanges
 - `protocol_tracker` — DefiLlama TVL spikes
 - `claude_service` — Claude CLI subprocess for contract analysis
+- `trading_service` — Hyperliquid auto-trading: on_signal entry, adaptive exits (60s poll), position reconciliation
 - `rate_limiter` — Token bucket per-domain
 
 ### Backend Routers (`backend/routers/`)
@@ -61,6 +64,7 @@ Two mirrored files define the same signal logic:
 - `funding` — /api/funding/* (rates, spreads, history)
 - `tokens`, `security`, `analyze` — token analysis
 - `claude` — SSE streaming analysis
+- `trading` — /api/trading/* (positions, history, close, stats)
 - `watchlist`, `settings`
 
 ### Frontend Components (`frontend/src/components/`)
@@ -90,6 +94,11 @@ Two mirrored files define the same signal logic:
 - Route order in derivatives.py: specific paths BEFORE `{symbol}` catch-all
 - VPS: `77.221.154.136` user `botuser`, path `/home/botuser/onchain-radar`, no sudo — use `/deploy` command
 - Signal direction convention: backtest="long"/"short", live DB="up"/"down", router normalizes for frontend
+- Trading: `HL_TRADING_ENABLED=false` by default — must explicitly enable in .env
+- Trading: hard SL always on HL exchange (survives service restarts), adaptive exits poll every 60s
+- Trading: `trades` table tracks positions; exit strategies mirror `ADAPTIVE_EXIT` from setup_backtest.py
+- Trading: counter-signal exit needs `_recent_signals` cache — loaded from `alert_tracking` on restart
+- Trading: any ADAPTIVE_EXIT or COUNTER_SIGNALS change → update BOTH `setup_backtest.py` AND `trading_service.py`
 
 ## Subagents & Commands
 

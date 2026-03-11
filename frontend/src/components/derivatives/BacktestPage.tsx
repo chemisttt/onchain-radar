@@ -33,6 +33,16 @@ const TYPE_SHORT: Record<string, string> = {
   distribution: 'DIST',
   overextension: 'OVX',
   oi_buildup_stall: 'OI\u2197\u23F8',
+  momentum_divergence: 'M\u21C4',
+  liq_ratio_extreme: 'LR!',
+}
+
+const EXIT_SHORT: Record<string, string> = {
+  counter_sig: 'CTR',
+  fixed: 'FIX',
+  trail_atr: 'TRL',
+  zscore_mr: 'ZMR',
+  hybrid: 'HYB',
 }
 
 function computeEma(closes: number[], period: number): (number | null)[] {
@@ -198,14 +208,16 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
       const markers: SeriesMarker<Time>[] = data.alerts.map((a) => {
         const is4h = a.timeframe === '4h'
         const upgraded = a.tier_upgraded
+        const tradeable = a.tradeable !== false
         const prefix = a.simulated ? (is4h ? '4h ' : 'sim ') : ''
-        const suffix = upgraded ? ' \u2B06' : ''
+        const suffix = (upgraded ? ' \u2B06' : '') + (tradeable && a.exit_strategy ? ` ${EXIT_SHORT[a.exit_strategy] || ''}` : '')
+        // Non-tradeable signals get very low opacity
+        const baseColor = TIER_COLORS[a.tier] || '#888'
+        const opacity = !tradeable ? '44' : a.simulated ? (is4h ? '77' : '99') : ''
         return {
           time: (a.time as UTCTimestamp) as Time,
           position: a.direction === 'long' ? 'belowBar' as const : 'aboveBar' as const,
-          color: a.simulated
-            ? (TIER_COLORS[a.tier] || '#888') + (is4h ? '77' : '99')
-            : TIER_COLORS[a.tier] || '#888',
+          color: baseColor + opacity,
           shape: is4h
             ? 'square' as const
             : a.direction === 'long' ? 'arrowUp' as const : 'arrowDown' as const,
@@ -278,8 +290,8 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
           <div className="ml-auto flex items-center gap-3 text-[10px] font-mono">
             <span className="text-[#555]">
               Signals: <span className="text-text-primary">{stats.total_signals}</span>
-              {stats.simulated_signals > 0 && (
-                <span className="text-[#555]"> ({stats.real_signals} real + {stats.simulated_signals} sim)</span>
+              {stats.tradeable_signals != null && (
+                <span className="text-[#555]"> (<span className="text-cyan">{stats.tradeable_signals}</span> trade)</span>
               )}
             </span>
             {stats.with_returns > 0 && (
@@ -288,11 +300,11 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                 <span className={stats.win_rate >= 50 ? 'text-green' : 'text-red'}>
                   {stats.win_rate}%
                 </span>
-                {stats.mfe_wr != null && (
+                {stats.tradeable_wr != null && stats.tradeable_with_returns != null && stats.tradeable_with_returns > 0 && (
                   <>
-                    <span className="text-[#555]">MFE:</span>
-                    <span className={stats.mfe_wr >= 60 ? 'text-green' : stats.mfe_wr >= 40 ? 'text-yellow' : 'text-red'}>
-                      {stats.mfe_wr}%
+                    <span className="text-[#555]">Trade WR:</span>
+                    <span className={stats.tradeable_wr >= 50 ? 'text-green' : 'text-red'}>
+                      {stats.tradeable_wr}%
                     </span>
                   </>
                 )}
@@ -300,6 +312,14 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                 <span className={stats.avg_return >= 0 ? 'text-green' : 'text-red'}>
                   {stats.avg_return > 0 ? '+' : ''}{stats.avg_return}%
                 </span>
+                {stats.tradeable_avg_return != null && stats.tradeable_with_returns != null && stats.tradeable_with_returns > 0 && (
+                  <>
+                    <span className="text-[#555]">Trade Avg:</span>
+                    <span className={stats.tradeable_avg_return >= 0 ? 'text-green' : 'text-red'}>
+                      {stats.tradeable_avg_return > 0 ? '+' : ''}{stats.tradeable_avg_return}%
+                    </span>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -360,6 +380,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                 <th className="text-right px-2 py-1">7D</th>
                 <th className="text-right px-2 py-1">MFE</th>
                 <th className="text-center px-2 py-1">Result</th>
+                <th className="text-center px-2 py-1">Exit</th>
                 <th className="text-center px-2 py-1">Src</th>
               </tr>
             </thead>
@@ -374,7 +395,7 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                   <tr
                     key={i}
                     onClick={() => scrollToAlert(a)}
-                    className={`hover:bg-[#111] cursor-pointer border-t border-[#111] ${a.simulated ? 'opacity-80' : ''}`}
+                    className={`hover:bg-[#111] cursor-pointer border-t border-[#111] ${a.tradeable === false ? 'opacity-40' : a.simulated ? 'opacity-80' : ''}`}
                   >
                     <td className="px-2 py-1 text-text-secondary">{a.fired_at.slice(0, 10)}</td>
                     <td className="px-2 py-1 text-text-primary">{a.type}</td>
@@ -400,6 +421,15 @@ export default function BacktestPage({ symbol }: { symbol: string | null }) {
                       {a.mfe_return != null ? `+${a.mfe_return.toFixed(1)}%` : '-'}
                     </td>
                     <td className="px-2 py-1 text-center">{hasReturn ? (won ? '\u2705' : mfeHit ? '\u25C6' : '\u274C') : '-'}</td>
+                    <td className="px-2 py-1 text-center">
+                      {a.tradeable !== false && a.exit_strategy ? (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-[#06b6d422] text-[#06b6d4]">
+                          {EXIT_SHORT[a.exit_strategy] || a.exit_strategy}
+                        </span>
+                      ) : a.tradeable === false ? (
+                        <span className="text-[8px] text-[#555]">-</span>
+                      ) : '-'}
+                    </td>
                     <td className="px-2 py-1 text-center flex gap-0.5 justify-center">
                       <span className={`text-[8px] px-1 py-0.5 rounded ${
                         a.simulated ? 'bg-[#1a1a1a] text-[#888]' : 'bg-[#22c55e22] text-green'

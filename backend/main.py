@@ -3,10 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from db import init_db, close_db
-from routers import feed, tokens, security, watchlist, funding, claude, settings, analyze, derivatives
+from routers import feed, tokens, security, watchlist, funding, claude, settings, analyze, derivatives, trading
 from services import feed_engine, funding_service, protocol_tracker, derivatives_service
 from services import options_service, liquidation_service, orderbook_service, momentum_service
-from services import telegram_service, price_service
+from services import telegram_service, price_service, trading_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -24,7 +24,9 @@ async def lifespan(app: FastAPI):
     orderbook_service.start()
     momentum_service.start()
     telegram_service.start()
+    trading_service.start()
     yield
+    trading_service.stop()
     feed_engine.stop()
     funding_service.stop()
     protocol_tracker.stop()
@@ -60,6 +62,7 @@ app.include_router(claude.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(analyze.router, prefix="/api")
 app.include_router(derivatives.router, prefix="/api")
+app.include_router(trading.router, prefix="/api")
 
 
 @app.get("/api/health")

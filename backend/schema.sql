@@ -205,6 +205,30 @@ CREATE TABLE IF NOT EXISTS derivatives_4h (
     PRIMARY KEY (symbol, ts)
 );
 
+-- Auto-trading positions (Hyperliquid)
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    entry_size_usd REAL NOT NULL,
+    leverage INTEGER DEFAULT 1,
+    sl_price REAL,
+    sl_order_id TEXT,
+    exit_price REAL,
+    exit_reason TEXT,
+    pnl_pct REAL,
+    pnl_usd REAL,
+    status TEXT DEFAULT 'open',
+    opened_at TEXT NOT NULL,
+    closed_at TEXT,
+    meta TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+
 -- 4h OHLCV candles for price structure analysis
 CREATE TABLE IF NOT EXISTS ohlcv_4h (
     symbol TEXT NOT NULL,

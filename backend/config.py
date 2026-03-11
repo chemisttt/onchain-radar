@@ -18,6 +18,14 @@ class Settings:
         self.telegram_chat_id = self._get("TELEGRAM_CHAT_ID", default="")
         self.telegram_thread_id = int(self._get("TELEGRAM_THREAD_ID", default="0") or "0")
 
+        # Trading (Hyperliquid)
+        self.hl_wallet_key = self._get("HL_WALLET_KEY", default="")
+        self.hl_enabled = self._get("HL_TRADING_ENABLED", default="false").lower() == "true"
+        self.hl_alloc_pct = float(self._get("HL_ALLOC_PCT", default="20"))
+        self.hl_leverage = int(self._get("HL_LEVERAGE", default="3"))
+        self.hl_max_positions = int(self._get("HL_MAX_POSITIONS", default="10"))
+        self.hl_hard_stop_pct = float(self._get("HL_HARD_STOP_PCT", default="8"))
+
     def _get(self, key: str, default: str | None = None) -> str | None:
         return os.getenv(key, default)
 

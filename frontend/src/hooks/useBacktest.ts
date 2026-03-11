@@ -32,6 +32,8 @@ export interface BacktestAlert {
   tier_upgraded?: boolean
   original_tier?: string
   zscores?: { oi: number; funding: number; liq: number; volume: number }
+  tradeable?: boolean
+  exit_strategy?: string | null
 }
 
 export interface BacktestStats {
@@ -45,6 +47,11 @@ export interface BacktestStats {
   mfe_wr?: number
   avg_return: number
   by_type?: Record<string, { count: number; win_rate: number; mfe_wr?: number; avg_return: number; avg_mfe?: number; pf: number }>
+  tradeable_signals?: number
+  tradeable_with_returns?: number
+  tradeable_wins?: number
+  tradeable_wr?: number
+  tradeable_avg_return?: number
 }
 
 export interface PriceStructure {

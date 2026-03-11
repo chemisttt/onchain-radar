@@ -14,7 +14,7 @@ import aiohttp
 
 from config import settings
 from db import get_db
-from services import market_analyzer
+from services import market_analyzer, trading_service
 
 log = logging.getLogger("telegram")
 
@@ -195,6 +195,12 @@ async def _poll_loop():
                     alerts = await market_analyzer.check_alerts()
                     now_ts = time.time()
 
+                    # Cache ALL signals for counter-exit detection
+                    # (before tier/cooldown filtering so counter-sig sees full stream)
+                    for alert in alerts:
+                        alert["expected_direction"] = market_analyzer._expected_direction(alert)
+                        trading_service.cache_signal(alert)
+
                     sent_count = 0
                     MAX_PER_CYCLE = 5  # prevent Telegram flood
 
@@ -227,6 +233,7 @@ async def _poll_loop():
                             _alert_cooldowns[key] = now_ts
                             await _save_cooldown(key, now_ts)
                             await market_analyzer.record_alert(alert)
+                            asyncio.create_task(trading_service.on_signal(alert))
                             sent_count += 1
                             log.info(f"Alert sent: {key}")
                         await asyncio.sleep(0.5)
