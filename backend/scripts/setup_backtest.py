@@ -630,7 +630,7 @@ def strategy_counter(bars, signal, cache=None, max_hold=30, hard_stop=HARD_STOP_
 
         triggered = cache.get(j, ())
         for st, sd in triggered:
-            if st in cs:
+            if st in cs and sd != d:
                 pnl = _walk_pnl(bars, ei, d, j)
                 return ExitResult(j, bars[j].close, "counter", pnl, j - ei, ma, mf)
 
@@ -851,7 +851,7 @@ def strategy_trail_counter(bars, signal, cache=None, atr_mult=1.5, be_pct=2.0, m
         # Counter-signal early exit
         triggered = cache.get(j, ())
         for st, sd in triggered:
-            if st in cs:
+            if st in cs and sd != d:
                 pnl = _walk_pnl(bars, ei, d, j)
                 return ExitResult(j, b.close, "counter", pnl, j - ei, ma, mf)
 
