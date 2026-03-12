@@ -12,9 +12,9 @@ function timeAgo(iso: string): string {
 }
 
 function fmtPrice(v: number): string {
-  if (v >= 100) return v.toLocaleString(undefined, { maximumFractionDigits: 0 })
-  if (v >= 1) return v.toFixed(2)
-  return v.toPrecision(4)
+  if (v >= 100) return `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+  if (v >= 1) return `$${v.toFixed(2)}`
+  return `$${v.toPrecision(4)}`
 }
 
 function parseMeta(meta: string): Record<string, string> {
@@ -31,15 +31,15 @@ export default function PositionsTable({ trades }: { trades: Trade[] }) {
 
   return (
     <div className="overflow-auto">
-      <table className="w-full text-[11px] font-mono">
+      <table className="w-full text-[11px] font-mono whitespace-nowrap">
         <thead>
           <tr className="text-[#555] text-left border-b border-[#1a1a1a]">
             <th className="px-3 py-1.5">Symbol</th>
             <th className="px-3 py-1.5">Dir</th>
             <th className="px-3 py-1.5">Signal</th>
-            <th className="px-3 py-1.5">Exit Strategy</th>
+            <th className="px-3 py-1.5">Exit</th>
             <th className="px-3 py-1.5 text-right">Entry</th>
-            <th className="px-3 py-1.5 text-right">Size $</th>
+            <th className="px-3 py-1.5 text-right">Size</th>
             <th className="px-3 py-1.5 text-right">Lev</th>
             <th className="px-3 py-1.5 text-right">SL</th>
             <th className="px-3 py-1.5">Opened</th>

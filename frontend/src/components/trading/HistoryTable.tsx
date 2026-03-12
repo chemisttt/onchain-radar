@@ -4,9 +4,9 @@ import type { Trade } from '../../hooks/useTrading'
 type SortKey = 'closed_at' | 'pnl_pct' | 'pnl_usd' | 'symbol'
 
 function fmtPrice(v: number): string {
-  if (v >= 100) return v.toLocaleString(undefined, { maximumFractionDigits: 0 })
-  if (v >= 1) return v.toFixed(2)
-  return v.toPrecision(4)
+  if (v >= 100) return `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+  if (v >= 1) return `$${v.toFixed(2)}`
+  return `$${v.toPrecision(4)}`
 }
 
 function daysHeld(opened: string, closed: string | null): string {
@@ -50,7 +50,7 @@ export default function HistoryTable({ trades }: { trades: Trade[] }) {
 
   return (
     <div className="overflow-auto">
-      <table className="w-full text-[11px] font-mono">
+      <table className="w-full text-[11px] font-mono whitespace-nowrap">
         <thead>
           <tr className="text-[#555] text-left border-b border-[#1a1a1a]">
             <th className="px-3 py-1.5 cursor-pointer hover:text-text-secondary" onClick={() => toggleSort('symbol')}>
