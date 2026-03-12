@@ -649,8 +649,8 @@ async def _save_rates(rates: list[dict]):
         saved += 1
     await db.commit()
 
-    # Prune old snapshots (keep 3 days)
-    await db.execute("DELETE FROM funding_snapshots WHERE fetched_at < datetime('now', '-3 days')")
+    # Prune old snapshots (keep 7 days — matches frontend default of 168h)
+    await db.execute("DELETE FROM funding_snapshots WHERE fetched_at < datetime('now', '-7 days')")
     await db.commit()
 
     return saved
