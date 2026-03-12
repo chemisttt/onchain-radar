@@ -1175,17 +1175,19 @@ async def check_alerts() -> list[dict]:
                     "Пробой уровня = каскад ликвидаций → ускорение движения.",
                 ])
 
-                alerts.append({
-                    "key": f"liq_proximity:{sym}",
-                    "symbol": sym,
-                    "price_change_pct": price_chg,
-                    "tier": "INFO",
-                    "confluence": 0,
-                    "entry_price": price,
-                    "cooldown_hours": 12,
-                    "title": f"📍 {short_sym} LIQ MAP — {range_str}",
-                    "body": body,
-                })
+                # Liq proximity alerts: BTC only (too noisy for alts)
+                if sym == "BTCUSDT":
+                    alerts.append({
+                        "key": f"liq_proximity:{sym}",
+                        "symbol": sym,
+                        "price_change_pct": price_chg,
+                        "tier": "INFO",
+                        "confluence": 0,
+                        "entry_price": price,
+                        "cooldown_hours": 24,
+                        "title": f"📍 {short_sym} LIQ MAP — {range_str}",
+                        "body": body,
+                    })
 
         # 6. OB DIVERGENCE (scalp)
         if SCALP_ALERTS_ENABLED and _is_ob_divergence(price_chg, ob_skew, ob_skew_z):
