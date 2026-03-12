@@ -31,19 +31,19 @@ export default function PositionsTable({ trades }: { trades: Trade[] }) {
 
   return (
     <div className="overflow-auto">
-      <table className="w-full text-[11px] font-mono whitespace-nowrap">
+      <table className="min-w-full text-[11px] font-mono">
         <thead>
           <tr className="text-[#555] text-left border-b border-[#1a1a1a]">
-            <th className="px-3 py-1.5">Symbol</th>
-            <th className="px-3 py-1.5">Dir</th>
-            <th className="px-3 py-1.5">Signal</th>
-            <th className="px-3 py-1.5">Exit</th>
-            <th className="px-3 py-1.5 text-right">Entry</th>
-            <th className="px-3 py-1.5 text-right">Size</th>
-            <th className="px-3 py-1.5 text-right">Lev</th>
-            <th className="px-3 py-1.5 text-right">SL</th>
-            <th className="px-3 py-1.5">Opened</th>
-            <th className="px-3 py-1.5"></th>
+            <th className="px-3 py-1.5 whitespace-nowrap">Symbol</th>
+            <th className="px-3 py-1.5 whitespace-nowrap">Dir</th>
+            <th className="px-3 py-1.5 whitespace-nowrap">Signal</th>
+            <th className="px-3 py-1.5 whitespace-nowrap">Exit</th>
+            <th className="px-3 py-1.5 whitespace-nowrap text-right">Entry</th>
+            <th className="px-3 py-1.5 whitespace-nowrap text-right">Size</th>
+            <th className="px-3 py-1.5 whitespace-nowrap text-right">Lev</th>
+            <th className="px-3 py-1.5 whitespace-nowrap text-right">SL</th>
+            <th className="px-3 py-1.5 whitespace-nowrap">Opened</th>
+            <th className="px-3 py-1.5 whitespace-nowrap"></th>
           </tr>
         </thead>
         <tbody>
@@ -52,19 +52,19 @@ export default function PositionsTable({ trades }: { trades: Trade[] }) {
             const isLong = t.direction === 'long'
             return (
               <tr key={t.id} className="border-b border-[#111] hover:bg-[#111]">
-                <td className="px-3 py-1.5 text-text-primary font-medium">{t.symbol}</td>
-                <td className={`px-3 py-1.5 font-medium ${isLong ? 'text-green' : 'text-red'}`}>
+                <td className="px-3 py-1.5 whitespace-nowrap text-text-primary font-medium">{t.symbol}</td>
+                <td className={`px-3 py-1.5 whitespace-nowrap font-medium ${isLong ? 'text-green' : 'text-red'}`}>
                   {t.direction.toUpperCase()}
                 </td>
-                <td className="px-3 py-1.5 text-text-secondary">{t.signal_type}</td>
-                <td className="px-3 py-1.5 text-text-secondary">{meta.exit_strategy || '—'}</td>
-                <td className="px-3 py-1.5 text-right text-text-primary">{fmtPrice(t.entry_price)}</td>
-                <td className="px-3 py-1.5 text-right text-text-primary">${t.entry_size_usd.toFixed(0)}</td>
-                <td className="px-3 py-1.5 text-right text-text-secondary">{t.leverage}x</td>
-                <td className="px-3 py-1.5 text-right text-text-secondary">
+                <td className="px-3 py-1.5 whitespace-nowrap text-text-secondary">{t.signal_type}</td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-text-secondary">{meta.exit_strategy || '—'}</td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-right text-text-primary">{fmtPrice(t.entry_price)}</td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-right text-text-primary">${t.entry_size_usd.toFixed(0)}</td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-right text-text-secondary">{t.leverage}x</td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-right text-text-secondary">
                   {t.sl_price ? fmtPrice(t.sl_price) : '—'}
                 </td>
-                <td className="px-3 py-1.5 text-text-secondary">{timeAgo(t.opened_at)}</td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-text-secondary">{timeAgo(t.opened_at)}</td>
                 <td className="px-3 py-1.5">
                   {confirming === t.id ? (
                     <div className="flex items-center gap-1">

@@ -50,7 +50,7 @@ export default function HistoryTable({ trades }: { trades: Trade[] }) {
 
   return (
     <div className="overflow-auto">
-      <table className="w-full text-[11px] font-mono whitespace-nowrap">
+      <table className="min-w-full text-[11px] font-mono">
         <thead>
           <tr className="text-[#555] text-left border-b border-[#1a1a1a]">
             <th className="px-3 py-1.5 cursor-pointer hover:text-text-secondary" onClick={() => toggleSort('symbol')}>
