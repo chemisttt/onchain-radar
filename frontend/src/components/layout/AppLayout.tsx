@@ -9,6 +9,7 @@ interface AppLayoutProps {
   fundingArb: ReactNode
   analyzer: ReactNode
   derivatives: ReactNode
+  trading: ReactNode
   docs: ReactNode
 }
 
@@ -26,10 +27,11 @@ const TABS: { key: ActiveTab; label: string }[] = [
   { key: 'funding', label: 'Funding Arb' },
   { key: 'analyzer', label: 'Token Analyzer' },
   { key: 'derivatives', label: 'Derivatives' },
+  { key: 'trading', label: 'Trading' },
   { key: 'docs', label: 'Docs' },
 ]
 
-export default function AppLayout({ feed, detail, watchlist, funding, fundingArb, analyzer, derivatives, docs }: AppLayoutProps) {
+export default function AppLayout({ feed, detail, watchlist, funding, fundingArb, analyzer, derivatives, trading, docs }: AppLayoutProps) {
   const { activeTab, setActiveTab } = useAppStore()
 
   return (
@@ -81,6 +83,12 @@ export default function AppLayout({ feed, detail, watchlist, funding, fundingArb
       {activeTab === 'derivatives' && (
         <div className="flex-1 min-h-0 p-px">
           {derivatives}
+        </div>
+      )}
+
+      {activeTab === 'trading' && (
+        <div className="flex-1 min-h-0 p-px">
+          {trading}
         </div>
       )}
 
