@@ -25,6 +25,14 @@ async def init_db():
         except Exception:
             pass  # column already exists
 
+    # Migration: add trade decision columns to alert_tracking
+    for col in ["trade_status TEXT", "trade_reason TEXT"]:
+        try:
+            await _db.execute(f"ALTER TABLE alert_tracking ADD COLUMN {col}")
+            await _db.commit()
+        except Exception:
+            pass  # column already exists
+
 
 class _DBProxy:
     """Thin wrapper adding execute_fetchone to aiosqlite.Connection."""

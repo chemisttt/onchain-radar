@@ -102,7 +102,8 @@ async def get_backtest(
         """SELECT alert_type, symbol, tier, confluence, fired_at,
                   entry_price, expected_direction,
                   price_1d, price_3d, price_7d,
-                  return_1d, return_3d, return_7d
+                  return_1d, return_3d, return_7d,
+                  trade_status, trade_reason
            FROM alert_tracking
            WHERE symbol = ? AND fired_at >= datetime(?, 'unixepoch')
            ORDER BY fired_at""",
@@ -150,6 +151,8 @@ async def get_backtest(
             "return_1d": a["return_1d"],
             "return_3d": a["return_3d"],
             "return_7d": a["return_7d"],
+            "trade_status": a["trade_status"],
+            "trade_reason": a["trade_reason"],
             "simulated": False,
             "timeframe": "1d",
         }

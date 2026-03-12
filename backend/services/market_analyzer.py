@@ -54,7 +54,6 @@ TOP_OI_SYMBOLS = {
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT",
     "DOGEUSDT", "TRXUSDT", "UNIUSDT", "SUIUSDT", "ADAUSDT",
 }
-ALT_MIN_CONFLUENCE = 5  # alts need SIGNAL+ to fire (not SETUP)
 MAX_DIRECTIONAL_ALERTS_PER_CYCLE = 5
 
 # Snapshot ring buffer: store every 5th call (=5min), keep 144 (=12h)
@@ -749,10 +748,6 @@ async def check_alerts() -> list[dict]:
         _extreme_cnt = sum([abs(oi_z) > 2.0, abs(liq_z) > 2.0, abs(vol_z) > 2.0])
         _crash_long = -2 if (price_momentum < -5 and _extreme_cnt >= 2) else 0
         _crash_short = -2 if (price_momentum > 5 and _extreme_cnt >= 2) else 0
-
-        # OI tier filter: skip weak alt signals entirely
-        if sym not in TOP_OI_SYMBOLS and confluence < ALT_MIN_CONFLUENCE:
-            continue
 
         # Momentum filter: skip signals against the trend
         _skip_long = trend == "down"

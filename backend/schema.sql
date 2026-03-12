@@ -188,7 +188,9 @@ CREATE TABLE IF NOT EXISTS alert_tracking (
     entry_price REAL NOT NULL,
     expected_direction TEXT,
     price_1d REAL, price_3d REAL, price_7d REAL,
-    return_1d REAL, return_3d REAL, return_7d REAL
+    return_1d REAL, return_3d REAL, return_7d REAL,
+    trade_status TEXT,
+    trade_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_alert_tracking_fired ON alert_tracking(fired_at);
 

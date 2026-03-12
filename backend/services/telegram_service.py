@@ -32,11 +32,6 @@ TELEGRAM_MIN_TIER = "SIGNAL"
 TIER_PRIORITY = {"SETUP": 0, "INFO": 1, "SIGNAL": 1, "TRIGGER": 2}
 INITIAL_DELAY = 30  # wait for services to warm up
 
-# Top symbols by OI — get frequent alerts (SIGNAL+)
-# All other alts: only TRIGGER or extreme price moves (>=20%)
-TOP_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
-ALT_MIN_PRICE_CHANGE = 20.0  # % — threshold for alts to bypass TRIGGER requirement
-
 # State
 _last_digest_date: str = ""
 _alert_cooldowns: dict[str, float] = {}  # key → timestamp of last fire
@@ -158,6 +153,20 @@ async def _send_long_message(text: str, session: aiohttp.ClientSession):
         await asyncio.sleep(0.5)
 
 
+async def _save_trade_decision(alert_key: str, status: str, reason: str):
+    """Persist trade decision to alert_tracking row."""
+    try:
+        db = get_db()
+        await db.execute(
+            "UPDATE alert_tracking SET trade_status=?, trade_reason=? "
+            "WHERE id = (SELECT id FROM alert_tracking WHERE alert_key=? "
+            "ORDER BY id DESC LIMIT 1)",
+            (status, reason, alert_key))
+        await db.commit()
+    except Exception as e:
+        log.error(f"Failed to save trade decision: {e}")
+
+
 async def _poll_loop():
     """Main loop: check digest time + alert conditions every 60s."""
     global _last_digest_date
@@ -216,13 +225,6 @@ async def _poll_loop():
                         if TIER_PRIORITY.get(tier, 0) < TIER_PRIORITY.get(TELEGRAM_MIN_TIER, 1):
                             continue
 
-                        # Alts (non-top): only on extreme price moves (20%+)
-                        sym = alert.get("symbol", "")
-                        if sym and sym not in TOP_SYMBOLS and sym != "GLOBAL":
-                            price_chg = abs(alert.get("price_change_pct", 0))
-                            if price_chg < ALT_MIN_PRICE_CHANGE:
-                                continue
-
                         cooldown = alert.get("cooldown_hours", 0) * 3600 if alert.get("cooldown_hours") else ALERT_COOLDOWNS.get(tier, DEFAULT_COOLDOWN)
                         if now_ts - _alert_cooldowns.get(key, 0) < cooldown:
                             continue
@@ -233,9 +235,10 @@ async def _poll_loop():
                             _alert_cooldowns[key] = now_ts
                             await _save_cooldown(key, now_ts)
                             await market_analyzer.record_alert(alert)
-                            asyncio.create_task(trading_service.on_signal(alert))
+                            trade_status, trade_reason = await trading_service.on_signal(alert)
+                            await _save_trade_decision(key, trade_status, trade_reason)
                             sent_count += 1
-                            log.info(f"Alert sent: {key}")
+                            log.info(f"Alert sent: {key} | trade: {trade_status} ({trade_reason})")
                         await asyncio.sleep(0.5)
 
                 except Exception as e:

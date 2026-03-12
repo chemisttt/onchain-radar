@@ -474,14 +474,15 @@ def cache_signal(alert: dict) -> None:
 
 # ─── Entry logic ────────────────────────────────────────────────────────
 
-async def on_signal(alert: dict) -> None:
+async def on_signal(alert: dict) -> tuple[str, str]:
     """Entry point — called from telegram_service when alert passes filters.
 
+    Returns (status, reason). status: 'opened', 'skipped', 'error'.
     Signal caching for counter-exits is done separately via cache_signal()
     which is called for ALL alerts before filtering.
     """
     if not settings.hl_enabled or not _wallet:
-        return
+        return ("skipped", "trading_disabled")
 
     key = alert.get("key", "")
     signal_type = key.split(":")[0] if ":" in key else key
@@ -490,28 +491,30 @@ async def on_signal(alert: dict) -> None:
 
     # Skip blocked signal types
     if signal_type in BLOCKED_SIGNAL_TYPES:
-        return
+        return ("skipped", "blocked_type")
 
     # Only trade signal types with a known exit strategy
     if signal_type not in ADAPTIVE_EXIT:
         log.debug(f"Signal type {signal_type} not in ADAPTIVE_EXIT, skipping trade")
-        return
+        return ("skipped", "not_tradeable")
 
     # Skip if no direction or symbol not tradeable
-    if not direction_raw or symbol not in HL_SYMBOLS:
-        return
+    if not direction_raw:
+        return ("skipped", "no_direction")
+    if symbol not in HL_SYMBOLS:
+        return ("skipped", "symbol_not_on_hl")
 
     direction = ("long" if direction_raw == "up"
                  else "short" if direction_raw == "down" else None)
     if not direction:
-        return
+        return ("skipped", "bad_direction")
 
     # Check max open positions
     open_count = await _count_open()
     if open_count >= settings.hl_max_positions:
         log.info(f"Max positions ({settings.hl_max_positions}) reached, "
                  f"skipping {symbol}")
-        return
+        return ("skipped", "max_positions")
 
     # No duplicate position for same symbol (any direction)
     db = get_db()
@@ -519,7 +522,7 @@ async def on_signal(alert: dict) -> None:
         "SELECT id FROM trades WHERE symbol=? AND status='open'", (symbol,))
     if dup:
         log.info(f"Already open on {symbol} (trade #{dup['id']}), skipping")
-        return
+        return ("skipped", f"duplicate_symbol:{dup['id']}")
 
     # Get alert_id from alert_tracking
     alert_id = None
@@ -535,7 +538,7 @@ async def on_signal(alert: dict) -> None:
     entry_price = alert.get("entry_price", 0)
     if not entry_price or entry_price <= 0:
         log.warning(f"No entry price for {symbol}, skipping")
-        return
+        return ("skipped", "no_entry_price")
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -543,13 +546,13 @@ async def on_signal(alert: dict) -> None:
             coin = _normalize_coin(symbol)
             if coin not in _asset_index:
                 log.warning(f"{coin} not in HL asset index, skipping")
-                return
+                return ("skipped", "not_in_hl_index")
 
             # Get equity and compute position size
             equity = await _get_equity(session)
             if equity <= 0:
                 log.warning(f"HL equity is {equity}, skipping")
-                return
+                return ("skipped", "no_equity")
 
             alloc_usd = equity * (settings.hl_alloc_pct / 100)
             size_usd = alloc_usd * settings.hl_leverage
@@ -571,7 +574,7 @@ async def on_signal(alert: dict) -> None:
                     f"<b>❌ ORDER FAILED: {symbol}</b>\n"
                     f"{signal_type} {direction}\n{err}",
                     session)
-                return
+                return ("error", f"order_failed:{str(err)[:100]}")
 
             fill = statuses[0]["filled"]
             fill_price = float(fill["avgPx"])
@@ -650,8 +653,11 @@ async def on_signal(alert: dict) -> None:
                 f"Exit strategy: {exit_type}",
                 session)
 
+            return ("opened", f"trade:{trade_id}")
+
     except Exception as e:
         log.error(f"on_signal error for {symbol}: {e}", exc_info=True)
+        return ("error", str(e)[:200])
 
 
 # ─── Adaptive exit checks ──────────────────────────────────────────────
