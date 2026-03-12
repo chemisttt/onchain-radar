@@ -839,8 +839,8 @@ def _check_counter_exit(trade: dict, pnl_pct: float) -> tuple[bool, str]:
     opened_at = datetime.fromisoformat(trade["opened_at"]).timestamp()
 
     signals = _recent_signals.get(symbol, [])
-    for sig_type, _sig_dir, sig_ts in signals:
-        if sig_ts > opened_at and sig_type in cs:
+    for sig_type, sig_dir, sig_ts in signals:
+        if sig_ts > opened_at and sig_type in cs and sig_dir != direction:
             return True, f"counter_{sig_type}"
 
     if pnl_pct <= -COUNTER_HARD_STOP_PCT:
