@@ -26,9 +26,23 @@ async def init_db():
             pass  # column already exists
 
 
-def get_db() -> aiosqlite.Connection:
+class _DBProxy:
+    """Thin wrapper adding execute_fetchone to aiosqlite.Connection."""
+
+    def __init__(self, conn: aiosqlite.Connection):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    async def execute_fetchone(self, sql: str, params=None):
+        rows = await self._conn.execute_fetchall(sql, params or ())
+        return rows[0] if rows else None
+
+
+def get_db() -> "_DBProxy":
     assert _db is not None, "DB not initialized"
-    return _db
+    return _DBProxy(_db)
 
 
 async def close_db():

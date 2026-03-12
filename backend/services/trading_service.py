@@ -166,8 +166,15 @@ def _sign_l1_action(action: dict, nonce: int) -> dict:
     return {"r": hex(signed.r), "s": hex(signed.s), "v": signed.v}
 
 
-def _float_to_wire(x: float, decimals: int = 8) -> str:
-    return f"{x:.{decimals}f}".rstrip("0").rstrip(".")
+def _float_to_wire(x: float, decimals: int = 8, max_sigfigs: int = 5) -> str:
+    """Convert float to HL wire format. HL requires ≤5 significant figures for prices."""
+    if x == 0:
+        return "0"
+    # Round to max_sigfigs significant figures
+    from math import log10, floor
+    magnitude = floor(log10(abs(x)))
+    rounded = round(x, -int(magnitude) + max_sigfigs - 1)
+    return f"{rounded:.{decimals}f}".rstrip("0").rstrip(".")
 
 
 def _sz_to_wire(coin: str, sz: float) -> str:
