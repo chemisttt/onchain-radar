@@ -1,6 +1,6 @@
 # On-Chain Radar
 
-Personal derivatives analytics dashboard. Real-time monitoring of OI, funding, liquidations, volatility across 30 perp symbols.
+Personal derivatives analytics dashboard + auto-trading system. Real-time monitoring of OI, funding, liquidations, volatility across 34 perp symbols. Signal detection → Telegram alerts → Hyperliquid auto-execution.
 
 ## Quick Reference
 
@@ -14,11 +14,12 @@ Personal derivatives analytics dashboard. Real-time monitoring of OI, funding, l
 | Doc | Contents |
 |-----|----------|
 | [docs/metrics-guide.md](docs/metrics-guide.md) | Все метрики + торговые стратегии |
-| [docs/TODO.md](docs/TODO.md) | 7 фич (VRP, Alt OI Dom, Vol Cone, Spot Delta, Composite v2, Momentum, Scatter) |
-| [docs/signal-backtest-results.md](docs/signal-backtest-results.md) | Бектест сигналов: WR/EV per type, thresholds, disabled signals |
-| [docs/equity-simulation.md](docs/equity-simulation.md) | Equity curves, leverage, position sizing, monthly PnL |
-| [README.md](README.md) | Архитектура, установка, API endpoints |
-| [SPEC.md](SPEC.md) | Полное ТЗ и roadmap |
+| [docs/TODO.md](docs/TODO.md) | 10 фич — все DONE (VRP, Momentum, Scatter, etc.) |
+| [docs/signal-backtest-results.md](docs/signal-backtest-results.md) | Бектест: Hybrid C 860 trades, WR/EV per type, disabled signals |
+| [docs/equity-simulation.md](docs/equity-simulation.md) | Equity curves, leverage, position sizing (528 daily-only, needs Hybrid C re-run) |
+| [docs/STRATEGY.md](docs/STRATEGY.md) | Финальная стратегия: Hybrid C, сигналы, выходы, walk-forward |
+| [README.md](README.md) | Архитектура, установка, полный module map |
+| [SPEC.md](SPEC.md) | ТЗ и roadmap (historical — Phases 1-4 planned, all done) |
 
 ## Signal System
 
@@ -35,6 +36,7 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 
 ### Key Constants
 - `TOP_OI_SYMBOLS` — BTC, ETH, SOL, XRP, BNB, DOGE, TRX, UNI, SUI, ADA
+- `ALT_MIN_CONFLUENCE = 5` — altcoins (non-TOP_OI) need confluence ≥5 (in BOTH backtest_service + market_analyzer)
 - Tiers: SETUP (≥3), SIGNAL (≥4), TRIGGER (≥6 but **capped to SIGNAL**)
 - Cooldowns: SIGNAL=12h, TRIGGER=6h (telegram_service.py)
 - Direction: backtest uses "long"/"short", live DB uses "up"/"down", router maps to "long"/"short" for frontend
@@ -47,7 +49,7 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 ## Module Map
 
 ### Backend Services (`backend/services/`)
-- `derivatives_service` — OI/funding/liq polling (4 exchanges) + z-scores + screener build
+- `derivatives_service` — OI/funding/liq polling (4 exchanges, 34 symbols) + z-scores + screener build
 - `options_service` — Deribit IV/RV/Skew + backfill (BTC/ETH only)
 - `liquidation_service` — Binance+Bybit WS liquidation collector + theoretical levels
 - `orderbook_service` — Binance OB depth ±2% + skew z-score (30s poll)
@@ -56,6 +58,13 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 - `protocol_tracker` — DefiLlama TVL spikes
 - `claude_service` — Claude CLI subprocess for contract analysis
 - `trading_service` — Hyperliquid auto-trading: on_signal entry, adaptive exits (60s poll), position reconciliation
+- `contract_scanner` — Vuln scanner: polls NEW_PAIR → factory filter → GoPlus → regex source scan → Telegram alert (topic 995)
+- `telegram_service` — Alert polling: cache_signal → cooldown → send → record_alert → fire on_signal
+- `market_analyzer` — Signal detection (5min cycle): confluence scoring, directional alerts, macro alerts
+- `backtest_service` — Historical backtesting (daily + 4h timeframes)
+- `signal_conditions` — Shared signal detection logic (used by backtest 4h + setup_backtest)
+- `momentum_service` — Cross-sectional/time-series momentum, DI, VR, scatter plots
+- `price_service` — Binance klines for backtest/market_analyzer price context
 - `rate_limiter` — Token bucket per-domain
 
 ### Backend Routers (`backend/routers/`)
@@ -68,16 +77,22 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 - `watchlist`, `settings`
 
 ### Frontend Components (`frontend/src/components/`)
-- `derivatives/` — DerivativesPanel, ScreenerTable, SymbolDetail, MomentumTab, LiquidationMap, GlobalDashboard, CompositeRegimeChart, MetricChart, ZScoreChart, ZScatterCard, ExpandedChartModal
+- `derivatives/` — DerivativesPanel, ScreenerTable, SymbolDetail, MomentumTab, LiquidationMap, GlobalDashboard, CompositeRegimeChart, MetricChart, ZScoreChart, ZScatterCard, ExpandedChartModal, BacktestPage, MomentumPage
+- `trading/` — TradingPanel, PositionsTable, HistoryTable, EquityCurve
 - `feed/` — FeedPanel, FeedItem, FeedFilters
 - `funding/` — FundingPanel, FundingArb, SpreadTable, FundingChart, RateComparison
 - `token/` — TokenPanel, SecurityScore, ClaudeAnalysis
 - `analyzer/` — AnalyzerPanel, RiskScore, CategoryBreakdown
+- `docs/` — DocsPanel
 
 ### Frontend Hooks (`frontend/src/hooks/`)
 - `useDerivativesScreener/Detail/Global` — derivatives data (5min refresh)
 - `useMomentum` — IV/RV/Skew (5min)
+- `useMomentumPage` — per-symbol momentum page data
 - `useLiquidationMap` — theoretical levels + real events (30s)
+- `useBacktest` — backtest signal data per symbol
+- `useTradingPositions/History/Stats` — trading data (15s/60s/30s refresh)
+- `useClosePosition` — close trade mutation
 - `useFunding/History/Spreads` — funding data
 - `useFeed` — WS + REST events
 - `useAnalyze`, `useSecurity`, `useTokenAnalysis` — token analysis
@@ -86,7 +101,7 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 
 - DB path: `backend/data/radar.db` (WAL mode, auto-created from schema.sql)
 - Recharts formatter types: use `any` for Tooltip callback params (strict TS compatibility)
-- Derivatives symbols: 30 hardcoded in `SYMBOLS` list (derivatives_service.py)
+- Derivatives symbols: 34 hardcoded in `SYMBOLS` list (derivatives_service.py)
 - Options data (IV/Skew): only BTC/ETH via Deribit — others get RV-only
 - Z-scores: min 7 data points required, 365-day rolling window
 - Polling intervals: derivatives 5min, OB 30sec, funding 60sec, feed 10-60sec
@@ -99,6 +114,11 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 - Trading: `trades` table tracks positions; exit strategies mirror `ADAPTIVE_EXIT` from setup_backtest.py
 - Trading: counter-signal exit needs `_recent_signals` cache — loaded from `alert_tracking` on restart
 - Trading: any ADAPTIVE_EXIT or COUNTER_SIGNALS change → update BOTH `setup_backtest.py` AND `trading_service.py`
+- Scanner: polls NEW_PAIR from feed_events (EVM only, liq ≥$10k), 60s interval, 45s initial delay
+- Scanner: factory detection — EIP-1167 clones + auto-learned bytecode hashes (5+ identical = factory)
+- Scanner: 7 vuln patterns with FP filters in `VULN_PATTERNS` list — extensible
+- Scanner: alerts go to Telegram topic 995 (`SCANNER_TELEGRAM_THREAD_ID`), separate from derivatives signals (topic 523)
+- Scanner: `contract_scans` + `factory_hashes` DB tables, scans cached 24h
 
 ## Subagents & Commands
 

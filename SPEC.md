@@ -26,10 +26,13 @@
 - **WebSocket** — realtime feed с batched broadcasting
 
 ### Frontend (React 19, Vite, Tailwind, Zustand, Recharts)
-3 таба:
-1. **Feed** — 2×2 grid: live feed + token detail + watchlist + funding overview
-2. **Funding Arb** — spread table + rate comparison + 7d history chart
-3. **Token Analyzer** — chain+address input → risk score + red flags
+6 табов:
+1. **Feed** — live feed + token detail + watchlist
+2. **Funding Arb** — spread table + rate comparison + history chart
+3. **Token Analyzer** — risk score + red flags + Claude analysis
+4. **Derivatives** — screener, symbol detail, z-scores, global dashboard, momentum, liquidation map, backtest
+5. **Trading** — open positions, trade history, equity curve, stats
+6. **Docs** — embedded documentation viewer
 
 ### API Endpoints
 ```
@@ -203,37 +206,48 @@ GET https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=
 ## Общая архитектура (после всех фаз)
 
 ```
-Frontend (React 19 + Vite)
+Frontend (React 19 + Vite 7 + Tailwind 4)
   ├── Feed Tab           — live events, token detail, watchlist
   ├── Funding Arb Tab    — spread scanner, rate comparison, charts
-  ├── Token Analyzer Tab — risk scoring, red flags
-  └── Derivatives Tab    — OI/funding/liq charts, z-scores, screener
+  ├── Token Analyzer Tab — risk scoring, red flags, Claude AI
+  ├── Derivatives Tab    — screener, symbol detail, z-scores, global, momentum, liq map, backtest
+  ├── Trading Tab        — positions, history, equity curve, stats
+  └── Docs Tab           — embedded documentation
 
 Backend (FastAPI + aiohttp)
-  ├── feed_engine.py        — DexScreener, GeckoTerminal, Etherscan, Helius
-  ├── funding_service.py    — 11 exchange rates + spreads + history
-  ├── derivatives_service.py — OI + liquidations + z-scores (NEW)
-  ├── protocol_tracker.py   — DefiLlama TVL/yield
-  ├── claude_service.py     — AI contract analysis
+  ├── derivatives_service   — OI/funding/liq (4 exchanges, 34 symbols) + z-scores
+  ├── market_analyzer       — signal detection (5min cycle, 11 signal types)
+  ├── trading_service       — Hyperliquid auto-trading + adaptive exits
+  ├── telegram_service      — alert pipeline + cooldowns
+  ├── options_service       — Deribit IV/RV/Skew/VRP (BTC/ETH)
+  ├── momentum_service      — cross-sectional momentum analytics
+  ├── liquidation_service   — Binance+Bybit WS real-time liq events
+  ├── orderbook_service     — Binance OB depth ±2%
+  ├── feed_engine           — DexScreener, GeckoTerminal, Etherscan, Helius
+  ├── funding_service       — 11+ exchange rates + spreads + history
+  ├── contract_scanner      — EVM vuln detection for new pairs
+  ├── claude_service        — AI contract analysis
   └── security services     — GoPlus, Honeypot, RugCheck
 
-Database (SQLite)
-  ├── feed_events
-  ├── funding_snapshots
-  ├── daily_derivatives      (NEW: OI, liq per symbol per day)
-  ├── derivatives_timeseries (NEW: precomputed z-scores)
-  ├── token_cache, security_cache, analysis_cache
-  ├── watchlist
-  └── settings
+Database (SQLite WAL, 17+ tables)
+  ├── daily_derivatives, derivatives_zscores, derivatives_4h
+  ├── ohlcv_4h, daily_volatility, daily_momentum, daily_rv
+  ├── liquidation_events, trades, alert_tracking, alert_cooldowns
+  ├── feed_events, funding_snapshots
+  ├── contract_scans, factory_hashes
+  ├── token_cache, security_cache, watchlist, settings
+  └── claude_sessions
 
 External APIs (все бесплатные)
-  ├── Binance, Bybit, OKX, MEXC, Bitget   — funding, OI, liquidations
-  ├── Hyperliquid + 5 perp DEX            — funding rates
-  ├── DexScreener, GeckoTerminal          — new pairs, trending
-  ├── Etherscan V2, Helius                — whale transfers
-  ├── GoPlus, Honeypot.is, RugCheck       — security
-  ├── DefiLlama                           — protocol TVL/yield
-  └── Deribit (потом)                     — options IV/RV
+  ├── Binance, Bybit, OKX, Bitget         — OI, funding, liquidations, OHLCV
+  ├── Hyperliquid                          — trade execution + position management
+  ├── Deribit                              — options IV/RV/Skew (BTC/ETH)
+  ├── 11+ exchanges                        — funding rates
+  ├── DexScreener, GeckoTerminal           — new pairs, trending
+  ├── Etherscan V2, Helius                 — whale transfers
+  ├── GoPlus, Honeypot.is, RugCheck        — token security
+  ├── DefiLlama                            — protocol TVL/yield
+  └── Telegram Bot API                     — signal alerts
 ```
 
 ---
@@ -263,11 +277,17 @@ External APIs (все бесплатные)
 | Protocol Tracker (TVL, Yield) | DONE |
 | Tab Layout (Feed / Funding / Analyzer) | DONE |
 | DEX/Protocol tags on tokens | DONE |
-| **OI Pipeline (Binance/Bybit/OKX/Bitget)** | **TODO** |
-| **Liquidations Pipeline** | **TODO** |
-| **Z-Scores + Percentiles** | **TODO** |
-| **Derivatives API** | **TODO** |
-| **Derivatives Tab (frontend)** | **TODO** |
-| **Screener Table** | **TODO** |
-| BTC/ETH Options (Deribit) | LATER |
-| Orderbook Depth | LATER |
+| OI Pipeline (Binance/Bybit/OKX/Bitget, 34 symbols) | DONE |
+| Liquidations Pipeline (Binance+Bybit WS) | DONE |
+| Z-Scores + Percentiles (365d rolling) | DONE |
+| Derivatives API + Screener | DONE |
+| Derivatives Tab (frontend) | DONE |
+| BTC/ETH Options (Deribit IV/RV/Skew/VRP) | DONE |
+| Orderbook Depth (Binance ±2%) | DONE |
+| Signal System (11 types, Hybrid C) | DONE |
+| Momentum Analytics (5-component score) | DONE |
+| Backtest System (daily + 4h, walk-forward) | DONE |
+| Telegram Alerts (cooldowns, tiers) | DONE |
+| Auto-Trading (Hyperliquid, adaptive exits) | DONE |
+| Trading Frontend (positions, history, equity) | DONE |
+| Contract Scanner (EVM vuln detection) | DONE |

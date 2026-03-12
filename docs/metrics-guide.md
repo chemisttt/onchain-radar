@@ -34,7 +34,7 @@
 
 ## 1. Обзор дашборда
 
-Дашборд мониторит 30 перп-символов на 4 биржах (Binance, Bybit, OKX, Bitget).
+Дашборд мониторит 34 перп-символа на 4 биржах (Binance, Bybit, OKX, Bitget).
 
 **Навигация верхнего уровня:**
 - **Feed** — Live Feed событий (whale transfers, new pairs, TVL spikes, yield)

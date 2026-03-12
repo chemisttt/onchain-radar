@@ -1,15 +1,21 @@
-# Signal Backtest Results (2026-03-11)
+# Signal Backtest Results
+
+> **Note:** This file documents the Phase A/B intermediate results (old 30-symbol set, 441 trades).
+> The final production config is **Hybrid C** (30 HL symbols, 860 trades, EV +1.45%, PF 1.64x).
+> See [STRATEGY.md](STRATEGY.md) for the definitive reference.
+
+## Phase A/B Results (old 30-symbol set, 2026-03-11)
 
 Backtest: 30 symbols, ~1100 days (3yr: Mar 2023 → Mar 2026), Adaptive exit strategy (4h)
 
-## Overall Performance (3-year, Adaptive exit)
-
-| Metric | Value |
-|---|---|
-| Trades | 441 |
-| Win rate | 49.9% |
-| EV per trade | +1.58% |
-| Profit Factor | 1.86x |
+| Metric | Phase A/B | Final Hybrid C |
+|---|---|---|
+| Trades | 441 | 860 |
+| Win rate | 49.9% | 50.0% |
+| EV per trade | +1.58% | +1.45% |
+| Profit Factor | 1.86x | 1.64x |
+| Total PnL | — | +1,246% |
+| Walk-forward | 6/6 | 6/6 |
 
 ## Phase B Validation (2026-03-11)
 
