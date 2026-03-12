@@ -54,6 +54,7 @@ TOP_OI_SYMBOLS = {
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT",
     "DOGEUSDT", "TRXUSDT", "UNIUSDT", "SUIUSDT", "ADAUSDT",
 }
+ALT_MIN_CONFLUENCE = 5  # alts need SIGNAL+ with >=5 confluence (matches backtest)
 MAX_DIRECTIONAL_ALERTS_PER_CYCLE = 5
 
 # Snapshot ring buffer: store every 5th call (=5min), keep 144 (=12h)
@@ -1252,6 +1253,14 @@ async def check_alerts() -> list[dict]:
                         "Проверить карту ликвидаций для целей по прибыли",
                     ],
                 ))
+
+    # ── ALT CONFLUENCE FILTER (matches backtest ALT_MIN_CONFLUENCE) ──
+    alerts = [
+        a for a in alerts
+        if a.get("symbol", "") in TOP_OI_SYMBOLS
+        or a.get("confluence", 0) >= ALT_MIN_CONFLUENCE
+        or a.get("tier") not in (TIER_SETUP, TIER_SIGNAL, TIER_TRIGGER)  # keep non-directional
+    ]
 
     # ── DIRECTIONAL ALERT CAP ────────────────────────────────
     # Keep only top-N directional alerts per cycle (prevents noise clusters)
