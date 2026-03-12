@@ -75,12 +75,13 @@ async def _compute_all():
     if existing:
         return
 
-    # Load price history for all symbols
+    # Load price history for all symbols (last 365 days is enough for momentum)
     all_prices: dict[str, list[tuple[str, float]]] = {}
     for sym in SYMBOLS:
         rows = await db.execute_fetchall(
             """SELECT date, close_price FROM daily_derivatives
                WHERE symbol = ? AND close_price > 0
+                 AND date >= date('now', '-365 days')
                ORDER BY date ASC""",
             (sym,),
         )

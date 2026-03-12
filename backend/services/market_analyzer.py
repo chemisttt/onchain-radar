@@ -554,6 +554,7 @@ async def _get_multi_day_batch() -> dict[str, dict]:
         """SELECT symbol, date, close_price, open_interest_usd, oi_binance_usd,
                   funding_rate, liquidations_long, liquidations_short, volume_usd
            FROM daily_derivatives
+           WHERE date >= date('now', '-60 days')
            ORDER BY symbol, date ASC""",
     )
     if not rows:
@@ -641,7 +642,7 @@ async def _get_multi_day_batch() -> dict[str, dict]:
     mom_rows = await db.execute_fetchall(
         """SELECT symbol, momentum_value, relative_volume
            FROM daily_momentum
-           ORDER BY date DESC""",
+           WHERE date = (SELECT MAX(date) FROM daily_momentum)""",
     )
     # Keep only the latest row per symbol
     mom_seen: set[str] = set()

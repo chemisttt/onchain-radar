@@ -624,13 +624,17 @@ def _funding_alert_seen(key: str) -> bool:
 
 
 async def _save_rates(rates: list[dict]):
-    """Save funding snapshots. Only save top symbols to keep DB small."""
+    """Save funding snapshots. Only save tracked symbols to keep DB small."""
+    from services.derivatives_service import SYMBOLS as _TRACKED
+    _tracked_set = set(_TRACKED)
+
     db = get_db()
 
-    # Only save symbols that appear on 2+ exchanges (useful for arb)
+    # Only save symbols that are in our tracked list AND appear on 2+ exchanges
     symbol_count: dict[str, int] = {}
     for r in rates:
-        symbol_count[r["symbol"]] = symbol_count.get(r["symbol"], 0) + 1
+        if r["symbol"] in _tracked_set:
+            symbol_count[r["symbol"]] = symbol_count.get(r["symbol"], 0) + 1
     multi_exchange = {s for s, c in symbol_count.items() if c >= 2}
 
     saved = 0
@@ -645,8 +649,8 @@ async def _save_rates(rates: list[dict]):
         saved += 1
     await db.commit()
 
-    # Prune old snapshots (keep 7 days)
-    await db.execute("DELETE FROM funding_snapshots WHERE fetched_at < datetime('now', '-7 days')")
+    # Prune old snapshots (keep 3 days)
+    await db.execute("DELETE FROM funding_snapshots WHERE fetched_at < datetime('now', '-3 days')")
     await db.commit()
 
     return saved

@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS funding_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_funding_symbol ON funding_snapshots(symbol, exchange);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_funding_unique ON funding_snapshots(symbol, exchange, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_funding_fetched ON funding_snapshots(fetched_at);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,

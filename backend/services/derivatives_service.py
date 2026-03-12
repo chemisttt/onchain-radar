@@ -293,7 +293,7 @@ async def _compute_all_zscores():
             """SELECT date, open_interest_usd, oi_binance_usd, funding_rate,
                       liquidations_delta, volume_usd, close_price
                FROM daily_derivatives
-               WHERE symbol = ?
+               WHERE symbol = ? AND date >= date('now', '-366 days')
                ORDER BY date ASC""",
             (sym,),
         )
@@ -707,7 +707,7 @@ async def _backfill_rolling_zscores():
             """SELECT date, close_price, open_interest_usd, oi_binance_usd,
                       funding_rate, liquidations_delta, volume_usd
                FROM daily_derivatives
-               WHERE symbol = ?
+               WHERE symbol = ? AND date >= date('now', '-730 days')
                ORDER BY date ASC""",
             (sym,),
         )
