@@ -1567,12 +1567,21 @@ def _expected_direction(alert: dict) -> str | None:
     if alert_type == "fund_reversal":
         title = alert.get("title", "")
         return "down" if "вниз" in title else "up" if "вверх" in title else None
-    # momentum_divergence / volume_spike / liq_ratio_extreme: bidirectional
-    if alert_type in ("momentum_divergence", "volume_spike", "liq_ratio_extreme"):
-        title = alert.get("title", "")
-        if "SHORT" in title or "шорт" in title.lower() or "↓" in title:
+    # momentum_divergence: direction from action text (most reliable)
+    if alert_type == "momentum_divergence":
+        action = " ".join(alert.get("action", []))
+        if "лонг" in action.lower():
+            return "up"
+        if "шорт" in action.lower():
             return "down"
-        if "LONG" in title or "лонг" in title.lower() or "↑" in title:
+        # Fallback: price down = bullish div = long
+        return "up" if alert.get("price_change_pct", 0) < 0 else "down"
+    # volume_spike / liq_ratio_extreme: bidirectional
+    if alert_type in ("volume_spike", "liq_ratio_extreme"):
+        title = alert.get("title", "")
+        if "SHORT" in title or "шорт" in title.lower():
+            return "down"
+        if "LONG" in title or "лонг" in title.lower():
             return "up"
         return "up" if alert.get("price_change_pct", 0) < 0 else "down"
     return None
