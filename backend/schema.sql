@@ -240,3 +240,27 @@ CREATE TABLE IF NOT EXISTS ohlcv_4h (
     volume REAL,
     PRIMARY KEY (symbol, ts)
 );
+
+-- Contract vulnerability scans
+CREATE TABLE IF NOT EXISTS contract_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chain TEXT NOT NULL,
+    address TEXT NOT NULL,
+    liquidity_usd REAL,
+    is_factory INTEGER DEFAULT 0,
+    is_verified INTEGER DEFAULT 0,
+    vulnerabilities TEXT DEFAULT '[]',
+    goplus_flags TEXT DEFAULT '{}',
+    scanned_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(chain, address)
+);
+CREATE INDEX IF NOT EXISTS idx_scans_chain ON contract_scans(chain);
+
+-- Known factory bytecode hashes (auto-learned)
+CREATE TABLE IF NOT EXISTS factory_hashes (
+    bytecode_hash TEXT PRIMARY KEY,
+    label TEXT,
+    example_address TEXT,
+    chain TEXT,
+    added_at TEXT DEFAULT (datetime('now'))
+);

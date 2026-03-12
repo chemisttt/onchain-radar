@@ -18,6 +18,10 @@ class Settings:
         self.telegram_chat_id = self._get("TELEGRAM_CHAT_ID", default="")
         self.telegram_thread_id = int(self._get("TELEGRAM_THREAD_ID", default="0") or "0")
 
+        # Contract scanner
+        self.contract_scanner_enabled = self._get("CONTRACT_SCANNER_ENABLED", default="true").lower() == "true"
+        self.scanner_telegram_thread_id = int(self._get("SCANNER_TELEGRAM_THREAD_ID", default="0") or "0")
+
         # Trading (Hyperliquid)
         self.hl_wallet_key = self._get("HL_WALLET_KEY", default="")
         self.hl_enabled = self._get("HL_TRADING_ENABLED", default="false").lower() == "true"

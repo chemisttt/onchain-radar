@@ -149,3 +149,10 @@ async def get_contract_source(session: aiohttp.ClientSession, chain_id: int, add
     if isinstance(result, list) and result:
         return result[0]
     return {}
+
+
+async def get_bytecode(session: aiohttp.ClientSession, chain_id: int, address: str) -> str:
+    """Get runtime bytecode via eth_getCode."""
+    result = await _call(session, chain_id, "proxy", "eth_getCode",
+                         address=address, tag="latest")
+    return result if isinstance(result, str) else ""

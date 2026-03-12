@@ -6,7 +6,7 @@ from db import init_db, close_db
 from routers import feed, tokens, security, watchlist, funding, claude, settings, analyze, derivatives, trading
 from services import feed_engine, funding_service, protocol_tracker, derivatives_service
 from services import options_service, liquidation_service, orderbook_service, momentum_service
-from services import telegram_service, price_service, trading_service
+from services import telegram_service, price_service, trading_service, contract_scanner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -25,7 +25,9 @@ async def lifespan(app: FastAPI):
     momentum_service.start()
     telegram_service.start()
     trading_service.start()
+    contract_scanner.start()
     yield
+    contract_scanner.stop()
     trading_service.stop()
     feed_engine.stop()
     funding_service.stop()
