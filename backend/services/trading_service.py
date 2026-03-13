@@ -565,20 +565,29 @@ async def on_signal(alert: dict) -> tuple[str, str]:
             # Set leverage
             await _set_leverage(session, coin)
 
-            # Place market order
+            # Place market order (retry up to 3 times on transient errors)
             is_buy = direction == "long"
-            result = await _market_open(session, coin, is_buy, sz)
+            last_err = ""
+            statuses = []
+            for attempt in range(1, 4):
+                result = await _market_open(session, coin, is_buy, sz)
+                statuses = (result.get("response", {}).get("data", {})
+                            .get("statuses", []))
+                if statuses and "filled" in statuses[0]:
+                    break
+                last_err = str(result.get("response", result))
+                if attempt < 3:
+                    log.warning(f"Market order attempt {attempt}/3 failed for "
+                                f"{symbol}: {last_err}, retrying in 3s...")
+                    await asyncio.sleep(3)
 
-            statuses = (result.get("response", {}).get("data", {})
-                        .get("statuses", []))
             if not statuses or "filled" not in statuses[0]:
-                err = result.get("response", result)
-                log.error(f"Market order failed for {symbol}: {err}")
+                log.error(f"Market order failed for {symbol} after 3 attempts: {last_err}")
                 await _notify(
                     f"<b>❌ ORDER FAILED: {symbol}</b>\n"
-                    f"{signal_type} {direction}\n{err}",
+                    f"{signal_type} {direction}\n{last_err}",
                     session)
-                return ("error", f"order_failed:{str(err)[:100]}")
+                return ("error", f"order_failed:{last_err[:100]}")
 
             fill = statuses[0]["filled"]
             fill_price = float(fill["avgPx"])
