@@ -340,12 +340,30 @@ def _compute_confluence(
 
 # ── Alert format ─────────────────────────────────────────────────────
 
+# Backtest stats per signal type (Hybrid C, 860 trades, 3yr)
+BACKTEST_STATS: dict[str, dict] = {
+    "liq_short_squeeze":   {"wr": 53, "ev": 2.58, "n": 265},
+    "momentum_divergence": {"wr": 52, "ev": 1.72, "n": 248},
+    "fund_spike":          {"wr": 33, "ev": 0.37, "n": 95},
+    "liq_ratio_extreme":   {"wr": 56, "ev": 1.51, "n": 82},
+    "distribution":        {"wr": 61, "ev": 1.85, "n": 23},
+    "div_top_1d":          {"wr": 48, "ev": 1.08, "n": 25},
+    "div_squeeze_3d":      {"wr": 50, "ev": 2.11, "n": 18},
+    "overheat":            {"wr": 39, "ev": 0.15, "n": 33},
+    "oi_buildup_stall":    {"wr": 50, "ev": 0.98, "n": 7},
+    "vol_divergence":      {"wr": 100, "ev": 3.76, "n": 3},
+    "fund_reversal":       {"wr": 50, "ev": 3.60, "n": 3},
+    "capitulation":        {"wr": 50, "ev": 1.50, "n": 2},
+}
+
+
 def _format_alert_body(
     what_we_see: list[str],
     indicators: list[str],
     action: list[str],
     tier: str = "",
     confluence: int = 0,
+    alert_type: str = "",
 ) -> str:
     """Format alert body with three sections + confidence footer."""
     lines = []
@@ -363,7 +381,11 @@ def _format_alert_body(
         lines.append(f"• {item}")
 
     if tier and confluence:
-        lines.append(f"\n<i>Confidence: {confluence}/10 | Tier: {tier}</i>")
+        bt = BACKTEST_STATS.get(alert_type, {})
+        bt_str = ""
+        if bt:
+            bt_str = f" | BT: WR {bt['wr']}%, EV {bt['ev']:+.2f}% (n={bt['n']})"
+        lines.append(f"\n<i>Confidence: {confluence}/10 | Tier: {tier}{bt_str}</i>")
 
     return "\n".join(lines)
 
@@ -374,6 +396,7 @@ def _build_directional_alert(
     key: str, sym: str, short_sym: str, title_suffix: str,
     cur: dict, velocities: dict, confluence: int, tier: str, factors: list[str],
     indicators: list[str], action: list[str],
+    alert_type: str = "",
 ) -> dict:
     """Generic builder for directional alerts."""
     oi_z, fund_z, liq_z = cur["oi_z"], cur["funding_z"], cur["liq_z"]
@@ -401,7 +424,7 @@ def _build_directional_alert(
         "confluence": confluence,
         "entry_price": cur["price"],
         "title": f"{TIER_EMOJI[tier]} {tier} | {short_sym} {title_suffix}",
-        "body": _format_alert_body(what_we_see, indicators, action, tier, confluence),
+        "body": _format_alert_body(what_we_see, indicators, action, tier, confluence, alert_type=alert_type or key),
     }
 
 
