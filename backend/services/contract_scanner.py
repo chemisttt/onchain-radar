@@ -70,8 +70,13 @@ VULN_PATTERNS: list[dict] = [
         "severity": "CRITICAL",
         "description": "Public/external mint() without access control",
         "regex": r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)[^}]{0,500}\}",
-        "fp_check": lambda src, match: not re.search(
-            r"only\w+|require\s*\(\s*msg\.sender|_checkRole|hasRole|_onlyRole", match
+        "fp_check": lambda src, match: (
+            # Must lack any access control
+            not re.search(r"only\w+|require\s*\(\s*msg\.sender|_checkRole|hasRole|_onlyRole", match)
+            # Must not be ERC4626 vault mint (takes shares+receiver, calls deposit/withdraw internally)
+            and "ERC4626" not in src[:500]
+            and "IERC4626" not in match
+            and "override" not in match  # standard OZ overrides are not free mints
         ),
     },
     {
