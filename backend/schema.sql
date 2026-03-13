@@ -256,6 +256,21 @@ CREATE TABLE IF NOT EXISTS contract_scans (
 );
 CREATE INDEX IF NOT EXISTS idx_scans_chain ON contract_scans(chain);
 
+-- Exploit attempt log
+CREATE TABLE IF NOT EXISTS exploit_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chain TEXT NOT NULL,
+    token_address TEXT NOT NULL,
+    vuln_type TEXT NOT NULL,
+    dry_run_ok INTEGER DEFAULT 0,
+    executed INTEGER DEFAULT 0,
+    tx_hash TEXT,
+    profit_weth REAL DEFAULT 0,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_exploits_chain ON exploit_attempts(chain);
+
 -- Known factory bytecode hashes (auto-learned)
 CREATE TABLE IF NOT EXISTS factory_hashes (
     bytecode_hash TEXT PRIMARY KEY,

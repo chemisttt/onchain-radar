@@ -33,6 +33,7 @@ limiters: dict[str, TokenBucket] = {
     "honeypot": TokenBucket(rate=2, capacity=5),
     "rugcheck": TokenBucket(rate=1, capacity=3),
     "helius": TokenBucket(rate=5, capacity=10),
+    "rpc": TokenBucket(rate=20, capacity=50),
 }
 
 

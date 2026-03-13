@@ -22,6 +22,14 @@ class Settings:
         self.contract_scanner_enabled = self._get("CONTRACT_SCANNER_ENABLED", default="true").lower() == "true"
         self.scanner_telegram_thread_id = int(self._get("SCANNER_TELEGRAM_THREAD_ID", default="0") or "0")
 
+        # Exploit engine
+        self.exploit_enabled = self._get("EXPLOIT_ENABLED", default="false").lower() == "true"
+        self.exploit_dry_run_only = self._get("EXPLOIT_DRY_RUN_ONLY", default="true").lower() == "true"
+        self.exploit_wallet_key = self._get("EXPLOIT_WALLET_KEY", default="")
+        self.drpc_api_key = self._get("DRPC_API_KEY", default="")
+        self.alchemy_api_key = self._get("ALCHEMY_API_KEY", default="")
+        self.exploit_max_gas_eth = float(self._get("EXPLOIT_MAX_GAS_ETH", default="0.01"))
+
         # Trading (Hyperliquid)
         self.hl_wallet_key = self._get("HL_WALLET_KEY", default="")
         self.hl_enabled = self._get("HL_TRADING_ENABLED", default="false").lower() == "true"

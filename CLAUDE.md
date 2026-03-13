@@ -66,6 +66,9 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 - `momentum_service` — Cross-sectional/time-series momentum, DI, VR, scatter plots
 - `price_service` — Binance klines for backtest/market_analyzer price context
 - `rate_limiter` — Token bucket per-domain
+- `exploit_engine` — Auto-exploit pipeline: polls contract_scans for vulns → build calldata → dry-run → execute → swap → Telegram alert (30s poll, DRY_RUN_ONLY=true default)
+- `exploit_templates` — Per-vuln calldata builders (unprotected_mint active, others alert-only)
+- `evm_rpc` — Thin JSON-RPC client (HTTP only, no web3.py), TX signing via eth_account, public RPC fallback
 
 ### Backend Routers (`backend/routers/`)
 - `derivatives` — /api/derivatives/* (screener, detail, global, momentum, liq-map, orderbook)
@@ -119,6 +122,12 @@ Legacy: `alert_tracking` DB → `derivatives.py` router (direction mapping) → 
 - Scanner: 7 vuln patterns with FP filters in `VULN_PATTERNS` list — extensible
 - Scanner: alerts go to Telegram topic 995 (`SCANNER_TELEGRAM_THREAD_ID`), separate from derivatives signals (topic 523)
 - Scanner: `contract_scans` + `factory_hashes` DB tables, scans cached 24h
+- Exploit: `EXPLOIT_ENABLED=false` by default, `EXPLOIT_DRY_RUN_ONLY=true` — safe start
+- Exploit: polls `contract_scans` every 30s, 60s initial delay (waits for scanner)
+- Exploit: only `unprotected_mint` auto-exploitable, other vuln types → manual alert
+- Exploit: public RPC fallback (llamarpc, base.org, arbitrum.io, binance.org) — no API keys needed for dry-run
+- Exploit: `exploit_attempts` DB table logs every attempt (dry-run result, tx hash, profit)
+- Exploit: swap via UniV2/PancakeV2 routers (token→WETH, fee-on-transfer safe)
 
 ## Subagents & Commands
 
