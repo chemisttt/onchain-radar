@@ -188,21 +188,34 @@ async def _is_factory_token(session: aiohttp.ClientSession, chain_id: int, chain
     return await _maybe_learn_factory(bcode_hash, chain, address)
 
 
+def _strip_interfaces(source: str) -> str:
+    """Remove interface blocks to avoid FP on interface function declarations.
+
+    Interface functions are declarations (end with ;) not implementations,
+    but regex patterns span past ; to the next } causing false matches.
+    """
+    # Match: interface IFoo { ... } or interface IFoo is IBar { ... }
+    # Interface bodies only contain function/event/error declarations (no nested {})
+    return re.sub(r'\binterface\s+\w+[^{]*\{[^}]*\}', '', source, flags=re.DOTALL)
+
+
 def _scan_source(source: str) -> list[dict]:
     """Run regex vulnerability patterns against verified source code."""
+    # Strip interface blocks to avoid matching function declarations as implementations
+    scan_src = _strip_interfaces(source)
     findings = []
     for pat in VULN_PATTERNS:
-        matches = list(re.finditer(pat["regex"], source, re.DOTALL))
+        matches = list(re.finditer(pat["regex"], scan_src, re.DOTALL))
         for m in matches:
             matched_text = m.group(0)
             # Apply false-positive filter if defined
             fp_check = pat.get("fp_check")
-            if fp_check and not fp_check(source, matched_text):
+            if fp_check and not fp_check(scan_src, matched_text):
                 continue
             # Extract snippet (max 200 chars centered on match)
             start = max(0, m.start() - 50)
-            end = min(len(source), m.end() + 100)
-            snippet = source[start:end].strip()
+            end = min(len(scan_src), m.end() + 100)
+            snippet = scan_src[start:end].strip()
             if len(snippet) > 200:
                 snippet = snippet[:200] + "..."
             findings.append({
