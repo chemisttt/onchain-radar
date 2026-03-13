@@ -188,8 +188,22 @@ Host: 77.221.154.136, user: botuser
 Path: /home/botuser/onchain-radar
 Service: systemd onchain-radar
 Nginx: serves frontend/dist, proxies /api + /ws to :8000
-Deploy: /deploy slash command (git push → SSH pull → restart → health check)
+Deploy: /deploy slash command (git push → SSH pull → pkill zombies → restart → health check)
 ```
+
+### Monitoring
+
+- **Internal**: `scripts/healthcheck.sh` — cron every 5min, Telegram alert + auto-restart if down
+- **External**: UptimeRobot — pings `http://<host>/api/health` (public, no auth)
+- `/api/health` supports GET + HEAD (for UptimeRobot compatibility)
+
+### Security
+
+- SSH: key-only auth, no root, fail2ban active
+- `.env` / `radar.db`: permissions `600` (owner-only)
+- Nginx: basic auth + session cookie on all endpoints except `/api/health`
+- Backend: bound to `127.0.0.1:8000` (not exposed)
+- HL orders: retry 3×3s on transient API errors
 
 ---
 
