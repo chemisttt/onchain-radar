@@ -210,6 +210,10 @@ async def _hl_exchange(session: aiohttp.ClientSession, action: dict) -> dict:
         data = await resp.json()
         if resp.status != 200:
             log.error(f"HL exchange error {resp.status}: {data}")
+        # HL API sometimes returns a bare string instead of dict
+        if not isinstance(data, dict):
+            log.error(f"HL exchange returned non-dict: {data}")
+            return {"status": "err", "response": str(data)}
         return data
 
 
