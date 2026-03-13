@@ -952,29 +952,40 @@ async def _execute_close(trade: dict, exit_price: float, exit_reason: str,
         return
 
     try:
-        # Reduce-only close (opposite direction)
+        # Reduce-only close (retry up to 3 times on transient errors)
         is_buy = direction != "long"
-        result = await _market_close(session, coin, is_buy, fill_sz, mids)
+        actual_exit_price = None
+        last_err = ""
 
-        statuses = (result.get("response", {}).get("data", {})
-                    .get("statuses", []))
-        if statuses and "filled" in statuses[0]:
-            fill = statuses[0]["filled"]
-            actual_exit_price = float(fill["avgPx"])
-        else:
-            err = result.get("response", result)
-            no_pos = ("No open position" in str(err)
-                      or "reduce only" in str(err).lower())
+        for attempt in range(1, 4):
+            result = await _market_close(session, coin, is_buy, fill_sz, mids)
+            statuses = (result.get("response", {}).get("data", {})
+                        .get("statuses", []))
+            if statuses and "filled" in statuses[0]:
+                fill = statuses[0]["filled"]
+                actual_exit_price = float(fill["avgPx"])
+                break
+
+            last_err = str(result.get("response", result))
+            no_pos = ("No open position" in last_err
+                      or "reduce only" in last_err.lower())
             if no_pos:
                 log.info(f"Trade #{trade_id} already closed on HL")
                 actual_exit_price = exit_price
                 exit_reason = "hard_stop"
-            else:
-                log.error(f"Close order failed for #{trade_id}: {err}")
-                await _notify(
-                    f"<b>❌ CLOSE FAILED #{trade_id}: {symbol}</b>\n"
-                    f"{err}", session)
-                return
+                break
+
+            if attempt < 3:
+                log.warning(f"Close attempt {attempt}/3 failed for "
+                            f"#{trade_id}: {last_err}, retrying in 3s...")
+                await asyncio.sleep(3)
+
+        if actual_exit_price is None:
+            log.error(f"Close order failed for #{trade_id} after 3 attempts: {last_err}")
+            await _notify(
+                f"<b>❌ CLOSE FAILED #{trade_id}: {symbol}</b>\n"
+                f"{last_err}", session)
+            return
 
         # Cancel SL order if still active
         sl_oid = trade.get("sl_order_id", "")
