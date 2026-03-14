@@ -30,6 +30,7 @@ const TYPE_SHORT: Record<string, string> = {
   vol_expansion: 'V\u2197',
   oi_flush_vol: 'OI\u2193V',
   fund_spike: 'F\u2191',
+  fund_mean_revert: 'FMR',
   distribution: 'DIST',
   overextension: 'OVX',
   oi_buildup_stall: 'OI\u2197\u23F8',
