@@ -521,13 +521,35 @@ async def on_signal(alert: dict) -> tuple[str, str]:
                  f"skipping {symbol}")
         return ("skipped", "max_positions")
 
-    # No duplicate position for same symbol (any direction)
+    # Check existing position for same symbol
     db = get_db()
     dup = await db.execute_fetchone(
-        "SELECT id FROM trades WHERE symbol=? AND status='open'", (symbol,))
+        "SELECT * FROM trades WHERE symbol=? AND status='open'", (symbol,))
     if dup:
-        log.info(f"Already open on {symbol} (trade #{dup['id']}), skipping")
-        return ("skipped", f"duplicate_symbol:{dup['id']}")
+        if dup["direction"] == direction:
+            log.info(f"Already {direction} on {symbol} (#{dup['id']}), skipping")
+            return ("skipped", f"duplicate_symbol:{dup['id']}")
+        # Opposite direction → flip: close old, then open new
+        log.info(f"Flipping {symbol}: closing {dup['direction']} #{dup['id']} → opening {direction}")
+        try:
+            async with aiohttp.ClientSession() as flip_session:
+                await _load_meta(flip_session)
+                mids = await _get_all_mids(flip_session)
+                mid = mids.get(_normalize_coin(symbol), 0)
+                if mid:
+                    if dup["direction"] == "long":
+                        raw_pnl = (mid - dup["entry_price"]) / dup["entry_price"] * 100
+                    else:
+                        raw_pnl = (dup["entry_price"] - mid) / dup["entry_price"] * 100
+                    pnl_pct = raw_pnl * dup.get("leverage", 1)
+                else:
+                    pnl_pct = 0
+                await _execute_close(
+                    dict(dup), mid, f"counter_flip_{signal_type}",
+                    pnl_pct, mids, flip_session)
+        except Exception as e:
+            log.error(f"Failed to close #{dup['id']} for flip: {e}")
+            return ("error", f"flip_close_failed:{e}")
 
     # Get alert_id from alert_tracking
     alert_id = None
