@@ -81,8 +81,8 @@ ZSCORE_TP_THRESH = {"oi_z": 0.5, "fund_z": 0.3, "liq_z": 1.0, "vol_z": 0.5}
 ZSCORE_SL_INCREASE = 1.0
 
 COUNTER_SIGNALS = {
-    "long": {"overheat", "fund_spike", "distribution", "overextension", "div_top_1d", "momentum_divergence", "volume_spike"},
-    "short": {"capitulation", "liq_flush", "liq_short_squeeze", "vol_divergence", "momentum_divergence", "volume_spike", "liq_ratio_extreme"},
+    "long": {"overheat", "fund_spike", "distribution", "overextension", "div_top_1d", "momentum_divergence", "volume_spike", "fund_reversal"},
+    "short": {"capitulation", "liq_flush", "liq_short_squeeze", "vol_divergence", "momentum_divergence", "volume_spike", "liq_ratio_extreme", "fund_reversal"},
 }
 
 # ─── Data Structures ────────────────────────────────────────────────────

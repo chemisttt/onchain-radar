@@ -62,10 +62,11 @@ BLOCKED_SIGNAL_TYPES = {"volume_spike"}
 # NOTE: volume_spike included as exit trigger even though blocked as entry
 COUNTER_SIGNALS = {
     "long":  {"overheat", "fund_spike", "distribution", "overextension",
-              "div_top_1d", "momentum_divergence", "volume_spike"},
+              "div_top_1d", "momentum_divergence", "volume_spike",
+              "fund_reversal"},
     "short": {"capitulation", "liq_flush", "liq_short_squeeze",
               "vol_divergence", "momentum_divergence", "volume_spike",
-              "liq_ratio_extreme"},
+              "liq_ratio_extreme", "fund_reversal"},
 }
 
 # Z-score primary metric per signal type
