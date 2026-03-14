@@ -456,6 +456,19 @@ async def _load_recent_signals() -> None:
         log.warning(f"Failed to load recent signals: {e}")
 
 
+_SIGNAL_CACHE_MAX_AGE = 7 * 86400  # 7 days
+
+
+def _prune_recent_signals() -> None:
+    """Remove signals older than 7 days to prevent memory leak."""
+    cutoff = time.time() - _SIGNAL_CACHE_MAX_AGE
+    for sym in list(_recent_signals):
+        _recent_signals[sym] = [
+            s for s in _recent_signals[sym] if s[2] > cutoff]
+        if not _recent_signals[sym]:
+            del _recent_signals[sym]
+
+
 def cache_signal(alert: dict) -> None:
     """Cache signal for counter-signal exit detection.
 
@@ -475,6 +488,7 @@ def cache_signal(alert: dict) -> None:
     now = time.time()
     _recent_signals.setdefault(symbol, []).append(
         (signal_type, direction, now))
+    _prune_recent_signals()
 
 
 # ─── Entry logic ────────────────────────────────────────────────────────
@@ -641,16 +655,25 @@ async def on_signal(alert: dict) -> tuple[str, str]:
             else:
                 sl_price = fill_price * (1 + hard_stop_frac)
 
-            sl_result = await _trigger_sl(
-                session, coin, is_buy, fill_sz, sl_price)
             sl_oid = ""
-            sl_statuses = (sl_result.get("response", {}).get("data", {})
-                           .get("statuses", []))
-            if sl_statuses and "resting" in sl_statuses[0]:
-                sl_oid = str(sl_statuses[0]["resting"]["oid"])
+            for sl_attempt in range(1, 4):
+                sl_result = await _trigger_sl(
+                    session, coin, is_buy, fill_sz, sl_price)
+                sl_statuses = (sl_result.get("response", {}).get("data", {})
+                               .get("statuses", []))
+                if sl_statuses and "resting" in sl_statuses[0]:
+                    sl_oid = str(sl_statuses[0]["resting"]["oid"])
+                    break
+                if sl_attempt < 3:
+                    log.warning(f"SL attempt {sl_attempt}/3 failed for "
+                                f"{symbol}: {sl_result}, retrying in 3s...")
+                    await asyncio.sleep(3)
             if not sl_oid:
-                log.warning(f"SL order may not have been placed for "
-                            f"{symbol}: {sl_result}")
+                log.error(f"SL order FAILED after 3 attempts for "
+                          f"{symbol}: {sl_result}")
+                await _notify(
+                    f"<b>⚠️ SL NOT PLACED: {symbol}</b>\n"
+                    f"Position open without hard stop!", session)
 
             # Build meta
             exit_type = ADAPTIVE_EXIT[signal_type]
