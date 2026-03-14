@@ -213,7 +213,7 @@ async def _hl_exchange(session: aiohttp.ClientSession, action: dict) -> dict:
         # HL API sometimes returns a bare string instead of dict
         if not isinstance(data, dict):
             log.error(f"HL exchange returned non-dict: {data}")
-            return {"status": "err", "response": str(data)}
+            return {"status": "err", "response": {"error": str(data)}}
         return data
 
 
