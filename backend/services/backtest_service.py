@@ -161,6 +161,7 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
 
     alerts: list[dict] = []
     cooldowns: dict[str, str] = {}  # "type:symbol" → last fired date
+    _fund_z_history: list[float] = []
 
     # Pre-compute z-scores for acceleration lookback
     oi_zscores: list[float] = []
@@ -239,6 +240,11 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
         mom_data = momentum_by_date.get(date, (0.0, 0.0))
         _momentum_value, _relative_volume = mom_data
 
+        # Fund z sustained (3 consecutive bars with fund_z > 1.0 / < -1.0)
+        _fund_z_history.append(fund_z)
+        _fz_high = len(_fund_z_history) >= 3 and all(z > 1.0 for z in _fund_z_history[-3:])
+        _fz_low = len(_fund_z_history) >= 3 and all(z < -1.0 for z in _fund_z_history[-3:])
+
         # Build shared SignalInput for this bar
         _has_fd = i >= 3
         _fund_delta = (fundings[i] - fundings[i - 3]) if _has_fd else 0.0
@@ -252,6 +258,7 @@ async def simulate_alerts(symbol: str, days: int = 180) -> list[dict]:
             price_momentum=price_momentum, z_accel=z_accel,
             vol_declining_3d=vol_declining_3d,
             fund_delta_3d=_fund_delta, has_fund_delta=_has_fd,
+            fund_z_sustained_high=_fz_high, fund_z_sustained_low=_fz_low,
             momentum_value=_momentum_value, relative_volume=_relative_volume,
             price_chg_5d=price_chg_5d,
             rv_regime=rv_regime,
@@ -558,6 +565,7 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
 
     alerts: list[dict] = []
     cooldowns: dict[str, int] = {}  # "type:symbol" → last fired index
+    _fund_z_history_4h: list[float] = []
 
     for i in range(warmup_end, total):
         price = prices[i]
@@ -584,6 +592,11 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
         vol_z = _zscore(volumes[start:i + 1])
         liq_long_z = _zscore(liq_longs[start:i + 1])
         liq_short_z = _zscore(liq_shorts[start:i + 1])
+
+        # Fund z sustained (3 bars with fund_z > 1.0 / < -1.0)
+        _fund_z_history_4h.append(fund_z)
+        _fz_high = len(_fund_z_history_4h) >= 3 and all(z > 1.0 for z in _fund_z_history_4h[-3:])
+        _fz_low = len(_fund_z_history_4h) >= 3 and all(z < -1.0 for z in _fund_z_history_4h[-3:])
 
         # 1-candle changes (4h → thresholds ÷3 vs daily)
         prev_price = prices[i - 1]
@@ -640,6 +653,7 @@ async def simulate_alerts_4h(symbol: str, days: int = 180) -> list[dict]:
             price_momentum=price_momentum, z_accel=z_accel,
             vol_declining_3d=vol_declining,
             fund_delta_3d=_fund_delta_4h, has_fund_delta=_has_fd_4h,
+            fund_z_sustained_high=_fz_high, fund_z_sustained_low=_fz_low,
             momentum_value=_mom_val_4h, relative_volume=_rv_4h,
             price_chg_5d=price_momentum,
             rv_regime=rv_regime,
@@ -790,6 +804,7 @@ async def simulate_alerts_4h_detection(symbol: str, days: int = 1095) -> list[di
 
     alerts: list[dict] = []
     cooldowns: dict[str, int] = {}  # "type:symbol" → last fired index
+    _fund_z_history_exit: list[float] = []
 
     for i in range(warmup_end, total):
         price = prices[i]
@@ -816,6 +831,11 @@ async def simulate_alerts_4h_detection(symbol: str, days: int = 1095) -> list[di
         vol_z = _zscore(volumes[start:i + 1])
         liq_long_z = _zscore(liq_longs[start:i + 1])
         liq_short_z = _zscore(liq_shorts[start:i + 1])
+
+        # Fund z sustained (3 bars with fund_z > 1.0 / < -1.0)
+        _fund_z_history_exit.append(fund_z)
+        _fz_high = len(_fund_z_history_exit) >= 3 and all(z > 1.0 for z in _fund_z_history_exit[-3:])
+        _fz_low = len(_fund_z_history_exit) >= 3 and all(z < -1.0 for z in _fund_z_history_exit[-3:])
 
         # 6-candle (~1d) changes — mapped to daily 1d thresholds
         idx_6 = max(0, i - 6)
@@ -866,6 +886,7 @@ async def simulate_alerts_4h_detection(symbol: str, days: int = 1095) -> list[di
             price_momentum=price_momentum, z_accel=z_accel,
             vol_declining_3d=vol_declining,
             fund_delta_3d=_fund_delta, has_fund_delta=_has_fd,
+            fund_z_sustained_high=_fz_high, fund_z_sustained_low=_fz_low,
             momentum_value=_mom_val, relative_volume=_rv,
             price_chg_5d=price_momentum,
             rv_regime=rv_regime,

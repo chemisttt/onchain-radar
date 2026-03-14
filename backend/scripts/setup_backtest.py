@@ -76,13 +76,14 @@ SIGNAL_PRIMARY_Z = {
     # Phase A new signals
     "momentum_divergence": "fund_z", "volume_spike": "vol_z",
     "liq_ratio_extreme": "liq_z",
+    "fund_mean_revert": "fund_z",
 }
 ZSCORE_TP_THRESH = {"oi_z": 0.5, "fund_z": 0.3, "liq_z": 1.0, "vol_z": 0.5}
 ZSCORE_SL_INCREASE = 1.0
 
 COUNTER_SIGNALS = {
-    "long": {"overheat", "fund_spike", "distribution", "overextension", "div_top_1d", "momentum_divergence", "volume_spike", "fund_reversal"},
-    "short": {"capitulation", "liq_flush", "liq_short_squeeze", "vol_divergence", "momentum_divergence", "volume_spike", "liq_ratio_extreme", "fund_reversal"},
+    "long": {"overheat", "fund_spike", "distribution", "overextension", "div_top_1d", "momentum_divergence", "volume_spike", "fund_reversal", "fund_mean_revert"},
+    "short": {"capitulation", "liq_flush", "liq_short_squeeze", "vol_divergence", "momentum_divergence", "volume_spike", "liq_ratio_extreme", "fund_reversal", "fund_mean_revert"},
 }
 
 # ─── Data Structures ────────────────────────────────────────────────────
@@ -423,6 +424,8 @@ def _bar_to_signal_input(bars: list[Bar], i: int) -> SignalInput:
     b = bars[i]
     has_fd = i >= 3
     fd = (b.funding_rate - bars[i - 3].funding_rate) if has_fd else 0.0
+    _fz_high = i >= 3 and all(bars[i - j].fund_z > 1.0 for j in range(3))
+    _fz_low = i >= 3 and all(bars[i - j].fund_z < -1.0 for j in range(3))
     return SignalInput(
         oi_z=b.oi_z, fund_z=b.fund_z, liq_z=b.liq_z, vol_z=b.vol_z,
         price_chg=b.price_chg, oi_chg=b.oi_chg,
@@ -433,6 +436,7 @@ def _bar_to_signal_input(bars: list[Bar], i: int) -> SignalInput:
         price_momentum=b.price_momentum, z_accel=b.z_accel,
         vol_declining_3d=b.vol_declining_3d,
         fund_delta_3d=fd, has_fund_delta=has_fd,
+        fund_z_sustained_high=_fz_high, fund_z_sustained_low=_fz_low,
         momentum_value=b.momentum_value, relative_volume=b.relative_volume,
         price_chg_5d=b.price_chg_5d,
     )
@@ -881,6 +885,7 @@ ADAPTIVE_EXIT = {
     "momentum_divergence": "counter_sig", # +1.72% EV, WR 57%, N=82
     "liq_ratio_extreme":   "counter_sig", # +1.51% EV, WR 56%, N=82
     "fund_spike":          "trail_atr",   # +0.37% EV, WR 33%, N=95 (rehabilitated)
+    "fund_mean_revert":    "counter_sig", # +2.09% EV, WR 57%, N=406
     "div_squeeze_1d":      "hybrid",      # mixed — hybrid safest
     # volume_spike: PERMANENTLY REMOVED (poisons system: -0.51% vs +1.58% without)
 }

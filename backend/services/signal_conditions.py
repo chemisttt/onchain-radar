@@ -43,6 +43,8 @@ OI_CHG_SQUEEZE_CAP = 20
 FUND_Z_SQUEEZE_CAP = 1.5
 FUND_Z_REVERSAL = 1.5
 FUND_DELTA_REVERSAL = 0.0005
+FUND_Z_MEAN_REVERT = 1.5
+FUND_Z_SUSTAINED = 1.0
 
 # New signal thresholds (Phase A)
 MOMENTUM_DIV_PRICE_CHG = 3       # % price change 5d
@@ -79,6 +81,8 @@ class SignalInput:
     vol_declining_3d: bool = False
     fund_delta_3d: float = 0.0   # funding_rate - funding_rate[i-3]
     has_fund_delta: bool = False  # whether fund_delta is available (i >= 3)
+    fund_z_sustained_high: bool = False  # fund_z > 1.0 for last 3 bars
+    fund_z_sustained_low: bool = False   # fund_z < -1.0 for last 3 bars
     momentum_value: float = 0.0      # composite momentum (-100..+100)
     relative_volume: float = 0.0     # relative volume (ratio to median)
     price_chg_5d: float = 0.0       # 5d price change %
@@ -129,6 +133,12 @@ def detect_signals(inp: SignalInput) -> list[tuple[str, str]]:
             triggered.append(("fund_reversal", "short"))
         if inp.fund_z < -FUND_Z_REVERSAL and inp.fund_delta_3d > FUND_DELTA_REVERSAL:
             triggered.append(("fund_reversal", "long"))
+
+    # Fund mean reversion (sustained extreme funding → reversal)
+    if inp.fund_z_sustained_high and inp.fund_z > FUND_Z_MEAN_REVERT and inp.trend != "up":
+        triggered.append(("fund_mean_revert", "short"))
+    if inp.fund_z_sustained_low and inp.fund_z < -FUND_Z_MEAN_REVERT and inp.trend != "down":
+        triggered.append(("fund_mean_revert", "long"))
 
     # === NEW SIGNALS (Phase A) ===
 

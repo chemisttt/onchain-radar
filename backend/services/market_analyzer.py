@@ -25,6 +25,7 @@ from services.signal_conditions import (
     LIQ_SHORT_Z_SQUEEZE, PRICE_CHG_SQUEEZE_LO, PRICE_CHG_SQUEEZE_HI,
     OI_CHG_SQUEEZE_CAP, FUND_Z_SQUEEZE_CAP,
     FUND_Z_REVERSAL, FUND_DELTA_REVERSAL,
+    FUND_Z_MEAN_REVERT, FUND_Z_SUSTAINED,
 )
 
 log = logging.getLogger("market_analyzer")
@@ -354,6 +355,7 @@ BACKTEST_STATS: dict[str, dict] = {
     "vol_divergence":      {"wr": 100, "ev": 3.76, "n": 3},
     "fund_reversal":       {"wr": 50, "ev": 3.60, "n": 3},
     "capitulation":        {"wr": 50, "ev": 1.50, "n": 2},
+    "fund_mean_revert":    {"wr": 57, "ev": 2.09, "n": 406},
 }
 
 
@@ -647,6 +649,14 @@ async def _get_multi_day_batch() -> dict[str, dict]:
         fund_3d_ago = fundings[-4] if n >= 4 else fundings[0]
         fund_delta = fundings[-1] - fund_3d_ago
 
+        # Fund z sustained (3 consecutive days with fund_z > 1.0 / < -1.0)
+        _fz_sustained_high = False
+        _fz_sustained_low = False
+        if n >= 3:
+            fz_recent = [_z(fundings[:n - j]) for j in range(3)]  # [today, yesterday, 2d ago]
+            _fz_sustained_high = all(z > FUND_Z_SUSTAINED for z in fz_recent)
+            _fz_sustained_low = all(z < -FUND_Z_SUSTAINED for z in fz_recent)
+
         result[sym] = {
             "price_chg_3d": price_chg_3d,
             "price_chg_5d": price_chg_5d,
@@ -659,6 +669,8 @@ async def _get_multi_day_batch() -> dict[str, dict]:
             "vol_declining_3d": vol_declining_3d,
             "fund_delta": fund_delta,
             "price_momentum": price_chg_5d,
+            "fund_z_sustained_high": _fz_sustained_high,
+            "fund_z_sustained_low": _fz_sustained_low,
         }
 
     # Load momentum data for new signals
@@ -752,6 +764,8 @@ async def check_alerts() -> list[dict]:
         vol_declining_3d = md.get("vol_declining_3d", False)
         fund_delta = md.get("fund_delta", 0)
         price_momentum = md.get("price_momentum", 0)
+        fund_z_sustained_high = md.get("fund_z_sustained_high", False)
+        fund_z_sustained_low = md.get("fund_z_sustained_low", False)
 
         velocities = _compute_all_velocities(sym, cur)
 
@@ -1065,6 +1079,36 @@ async def check_alerts() -> list[dict]:
                         ],
                     ))
 
+        # 17b. FUND MEAN REVERT — sustained extreme funding → mean reversion
+        if fund_z_sustained_high and fund_z > FUND_Z_MEAN_REVERT and not _skip_short:
+            tier = _score_to_tier(confluence + _crash_short)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "fund_mean_revert", sym, short_sym, "FUND MEAN REVERT — фандинг устойчиво высокий",
+                    cur, velocities, confluence + _crash_short, tier, factors,
+                    indicators=[
+                        f"Фандинг z: {fund_z:+.1f}, sustained >1.0 за 3 дня",
+                        "Устойчивый экстрем фандинга → mean reversion шорт",
+                    ],
+                    action=[
+                        "Готовить шорт от сопротивления",
+                    ],
+                ))
+        if fund_z_sustained_low and fund_z < -FUND_Z_MEAN_REVERT and not _skip_long:
+            tier = _score_to_tier(confluence + _crash_long)
+            if tier:
+                alerts.append(_build_directional_alert(
+                    "fund_mean_revert", sym, short_sym, "FUND MEAN REVERT — фандинг устойчиво низкий",
+                    cur, velocities, confluence + _crash_long, tier, factors,
+                    indicators=[
+                        f"Фандинг z: {fund_z:+.1f}, sustained <-1.0 за 3 дня",
+                        "Устойчивый экстрем фандинга → mean reversion лонг",
+                    ],
+                    action=[
+                        "Искать лонг от поддержки",
+                    ],
+                ))
+
         # 18. OI FLUSH + VOL SPIKE — DISABLED (unpredictable in both directions)
         # if oi_chg < -5 and vol_z > 1.5 and price_chg < -3:
         #     ...pass...
@@ -1312,7 +1356,7 @@ async def check_alerts() -> list[dict]:
             "divergence_top", "div_top_3d", "distribution", "overextension", "oi_buildup_stall",
             "capitulation", "liq_flush", "liq_flush_3d", "vol_divergence",
             "liq_long_flush", "liq_short_squeeze", "fund_reversal", "oi_flush_vol",
-            "momentum_divergence", "volume_spike", "liq_ratio_extreme",
+            "momentum_divergence", "volume_spike", "liq_ratio_extreme", "fund_mean_revert",
         }
     for alert in alerts:
         key = alert.get("key", "")
@@ -1562,6 +1606,7 @@ _EXPECTED_DIRECTION = {
     "liq_long_flush": "down",  # flipped: cascading liq = bearish
     "liq_short_squeeze": "up",
     "fund_reversal": None,  # depends on direction
+    "fund_mean_revert": None,  # depends on direction (bidirectional)
     "oi_flush_vol": "up",
     # Phase A new signals
     "momentum_divergence": None,  # depends on direction (bidirectional)
@@ -1599,6 +1644,14 @@ def _expected_direction(alert: dict) -> str | None:
     if alert_type == "fund_reversal":
         title = alert.get("title", "")
         return "down" if "вниз" in title else "up" if "вверх" in title else None
+    # fund_mean_revert: direction from action text
+    if alert_type == "fund_mean_revert":
+        action = " ".join(alert.get("action", []))
+        if "лонг" in action.lower():
+            return "up"
+        if "шорт" in action.lower():
+            return "down"
+        return None
     # momentum_divergence: direction from action text (most reliable)
     if alert_type == "momentum_divergence":
         action = " ".join(alert.get("action", []))

@@ -52,6 +52,7 @@ ADAPTIVE_EXIT = {
     "momentum_divergence": "counter_sig",
     "liq_ratio_extreme":   "counter_sig",
     "fund_spike":          "trail_atr",
+    "fund_mean_revert":    "counter_sig",
     "div_squeeze_1d":      "hybrid",
 }
 
@@ -63,10 +64,10 @@ BLOCKED_SIGNAL_TYPES = {"volume_spike"}
 COUNTER_SIGNALS = {
     "long":  {"overheat", "fund_spike", "distribution", "overextension",
               "div_top_1d", "momentum_divergence", "volume_spike",
-              "fund_reversal"},
+              "fund_reversal", "fund_mean_revert"},
     "short": {"capitulation", "liq_flush", "liq_short_squeeze",
               "vol_divergence", "momentum_divergence", "volume_spike",
-              "liq_ratio_extreme", "fund_reversal"},
+              "liq_ratio_extreme", "fund_reversal", "fund_mean_revert"},
 }
 
 # Z-score primary metric per signal type
@@ -76,6 +77,7 @@ SIGNAL_PRIMARY_Z = {
     "oi_buildup_stall": "oi_zscore",
     "capitulation": "funding_zscore", "fund_spike": "funding_zscore",
     "fund_reversal": "funding_zscore",
+    "fund_mean_revert": "funding_zscore",
     "liq_flush": "liq_zscore", "liq_short_squeeze": "liq_zscore",
     "vol_divergence": "volume_zscore", "distribution": "volume_zscore",
     "overextension": "oi_zscore",
