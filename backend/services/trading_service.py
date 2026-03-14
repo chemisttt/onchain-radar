@@ -536,6 +536,9 @@ async def on_signal(alert: dict) -> tuple[str, str]:
                 await _load_meta(flip_session)
                 mids = await _get_all_mids(flip_session)
                 mid = mids.get(_normalize_coin(symbol), 0)
+                if not mid:
+                    log.error(f"No mid price for {symbol}, can't flip")
+                    return ("error", "flip_no_mid_price")
                 if mid:
                     if dup["direction"] == "long":
                         raw_pnl = (mid - dup["entry_price"]) / dup["entry_price"] * 100
@@ -616,6 +619,10 @@ async def on_signal(alert: dict) -> tuple[str, str]:
             fill_price = float(fill["avgPx"])
             fill_sz = float(fill["totalSz"])
             actual_size_usd = fill_price * fill_sz
+
+            if fill_sz <= 0:
+                log.error(f"Zero fill on {symbol}, not recording trade")
+                return ("error", "zero_fill")
 
             if fill_sz < sz * 0.95:
                 log.warning(f"Partial fill on {symbol}: requested {sz:.6f}, "
@@ -971,8 +978,20 @@ async def _execute_close(trade: dict, exit_price: float, exit_reason: str,
     fill_sz = meta.get("fill_sz", 0)
 
     if not fill_sz:
-        log.error(f"No fill_sz for trade #{trade_id}, can't close")
-        return
+        # Fallback: try to get size from HL position
+        try:
+            acct = await _get_account_state(session)
+            for pos in acct.get("assetPositions", []):
+                p = pos.get("position", {})
+                if p.get("coin") == coin and float(p.get("szi", 0)) != 0:
+                    fill_sz = abs(float(p["szi"]))
+                    log.warning(f"Recovered fill_sz={fill_sz} from HL for #{trade_id}")
+                    break
+        except Exception:
+            pass
+        if not fill_sz:
+            log.error(f"No fill_sz for trade #{trade_id}, can't close")
+            return
 
     try:
         # Reduce-only close (retry up to 3 times on transient errors)
