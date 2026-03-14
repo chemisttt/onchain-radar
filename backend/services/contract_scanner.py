@@ -77,6 +77,9 @@ VULN_PATTERNS: list[dict] = [
             and "ERC4626" not in src[:500]
             and "IERC4626" not in match
             and "override" not in match  # standard OZ overrides are not free mints
+            # Must not be DEX/pool mint (struct params like MintParams, liquidity ops)
+            and not re.search(r"MintParams|AddLiquidity|IncreaseLiquidity|IPoolManager|INonfungible", match)
+            and "calldata params" not in match  # generic struct param pattern
         ),
     },
     {
