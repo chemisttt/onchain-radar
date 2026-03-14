@@ -44,9 +44,14 @@ async def _send_startup_alert():
     lines = ["\U0001f7e2 <b>onchain-radar restarted</b>\n"]
     for name, svc in SERVICES:
         task = getattr(svc, "_task", None)
+        tasks = getattr(svc, "_tasks", None)
         if task and not task.done():
             lines.append(f"  \u2705 {name}")
         elif task and task.done():
+            lines.append(f"  \u274c {name} (crashed)")
+        elif tasks and any(not t.done() for t in tasks):
+            lines.append(f"  \u2705 {name}")
+        elif tasks and all(t.done() for t in tasks):
             lines.append(f"  \u274c {name} (crashed)")
         else:
             lines.append(f"  \u23f8 {name} (disabled)")
