@@ -112,7 +112,7 @@ VULN_PATTERNS: list[dict] = [
         "severity": "MEDIUM",
         "description": "Contract contains selfdestruct — owner can rug by destroying contract",
         "regex": r"selfdestruct\s*\(",
-        "fp_check": lambda src, match: "onlyOwner" in src or "owner" in src,
+        "fp_check": lambda src, match: "onlyOwner" not in src and "owner" not in src,
     },
     {
         "id": "delegatecall_to_variable",
@@ -396,6 +396,20 @@ async def _scan_token(session: aiohttp.ClientSession, token: dict) -> None:
     symbol = token["symbol"]
     liquidity = token["liquidity"]
     scan_key = f"{chain}:{address.lower()}"
+
+    # Step 0: Skip known protocols (verified_contracts allowlist)
+    try:
+        db = get_db()
+        known = await db.execute_fetchone(
+            "SELECT id FROM verified_contracts WHERE chain = ? AND LOWER(address) = LOWER(?)",
+            (chain, address),
+        )
+        if known:
+            log.debug(f"SKIP known protocol: {chain}/{symbol} ({address[:10]}...)")
+            _scanned[scan_key] = time.time()
+            return
+    except Exception:
+        pass  # table may not exist yet — continue scanning
 
     # Step 1: Factory check
     is_factory = await _is_factory_token(session, chain_id, chain, address)

@@ -28,6 +28,7 @@ frontend/dist/
 
 # External projects
 docs/web3map-*
+docs/screenshots/web3map/
 
 # Claude
 .claude/
