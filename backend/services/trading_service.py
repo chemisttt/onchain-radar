@@ -252,8 +252,28 @@ async def _get_account_state(session: aiohttp.ClientSession) -> dict:
 
 
 async def _get_equity(session: aiohttp.ClientSession) -> float:
+    """Get equity for position sizing.
+
+    Uses crossMarginSummary.accountValue (our positions are cross-margin).
+    Falls back to totalRawUsd if accountValue is anomalously low.
+    """
     acct = await _get_account_state(session)
-    return float(acct.get("marginSummary", {}).get("accountValue", 0))
+    cross = acct.get("crossMarginSummary", {})
+    margin = acct.get("marginSummary", {})
+    account_value = float(cross.get("accountValue", 0) or
+                          margin.get("accountValue", 0))
+    raw_usd = float(margin.get("totalRawUsd", 0))
+    withdrawable = float(acct.get("withdrawable", 0))
+
+    # Sanity: if accountValue < 50% of rawUsd, API returned anomalous value
+    if raw_usd > 0 and account_value < raw_usd * 0.5:
+        log.warning(f"Equity ${account_value:.2f} anomalous vs "
+                    f"rawUsd ${raw_usd:.2f}, using rawUsd")
+        account_value = raw_usd
+
+    log.debug(f"Equity: accountValue=${account_value:.2f} "
+              f"rawUsd=${raw_usd:.2f} withdrawable=${withdrawable:.2f}")
+    return account_value
 
 
 async def _set_leverage(session: aiohttp.ClientSession, coin: str) -> None:
@@ -602,6 +622,9 @@ async def on_signal(alert: dict) -> tuple[str, str]:
 
             alloc_usd = equity * (settings.hl_alloc_pct / 100)
             size_usd = alloc_usd * settings.hl_leverage
+            log.info(f"Sizing {symbol}: equity=${equity:.2f} "
+                     f"alloc={settings.hl_alloc_pct}% "
+                     f"size=${size_usd:.2f}")
             sz = size_usd / entry_price
 
             # Set leverage
