@@ -26,5 +26,8 @@ frontend/dist/
 .vscode/
 *.swp
 
+# External projects
+docs/web3map-*
+
 # Claude
 .claude/

@@ -35,6 +35,7 @@ Backtest: 30 symbols, ~1100 days (3yr: Mar 2023 → Mar 2026), Adaptive exit str
 | liq_short_squeeze | 81 | 56% | counter_sig | +3.54% |
 | vol_divergence | ~3 | 100% | counter_sig | +3.76% |
 | fund_reversal | ~3 | 50% | zscore_mr | +3.60% |
+| **fund_mean_revert** | **134** | **65.7%** | **counter_sig** | **+3.18%** |
 | div_squeeze_3d | 18 | 50% | counter_sig | +2.11% |
 | distribution | 23 | 61% | fixed | +1.85% |
 | momentum_divergence | 82 | 57% | counter_sig | +1.72% |
@@ -118,6 +119,7 @@ Prerequisites:
 | 3yr + signal fixes | 324 | 38.9% | +1.19% | 3yr |
 | Phase A (new signals) | 441 | 49.9% | +1.58% | 3yr |
 | **Phase B (validated)** | **441** | **49.9%** | **+1.58%** | **3yr** |
+| **+ fund_mean_revert** | **994** | **52.4%** | **+1.94%** | **3yr** |
 
 ### Phase B Changes
 - Walk-forward validated: 6/6 windows positive

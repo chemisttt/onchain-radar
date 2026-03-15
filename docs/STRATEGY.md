@@ -15,15 +15,14 @@ Derivatives-based signal system for crypto perpetual futures. Detects structural
 - **Confluence scoring:** 10-component score filters noise
 - **Adaptive exits:** per-signal-type routing to optimal exit strategy
 
-**Headline numbers (HL 30 + Hybrid C + adaptive exits):**
+**Headline numbers (HL 30 + Hybrid C + fund_mean_revert + adaptive exits):**
 
 | Metric | Value |
 |--------|-------|
-| Trades | 860 |
-| Win Rate | 50.0% |
-| EV per trade (net) | +1.45% |
-| Profit Factor | 1.64x |
-| Total PnL | +1,246% |
+| Trades | 994 |
+| Win Rate | 52.4% |
+| EV per trade (net) | +1.94% |
+| Total PnL | +1,827% |
 | Walk-Forward | 6/6 positive, avg +1.60% |
 
 **Comparison with daily-only:**
@@ -85,7 +84,7 @@ HL Hybrid C is the production config: +63% more trades vs daily-only, -0.07% EV,
 
 Source of truth: `backend/services/signal_conditions.py`
 
-### 3.1 Active Signals (11)
+### 3.1 Active Signals (12)
 
 #### SHORT signals
 
@@ -115,6 +114,7 @@ Source of truth: `backend/services/signal_conditions.py`
 | **fund_reversal** | short if fund_z > threshold, long if fund_z < -threshold | Extreme funding reversing direction. Requires `has_fund_delta = true` (≥3 bars of funding history); silently skipped otherwise | `\|fund_z\| > 1.5`, `fund_delta_3d` crosses 0 (opposite sign to fund_z), `delta > 0.0005` |
 | **momentum_divergence** | short if price up + momentum down, long if price down + momentum up | Price vs composite momentum disagree | `\|price_chg_5d\| > 3%`, `\|momentum_value\| > 20` (opposite signs) |
 | **liq_ratio_extreme** | long if liq_long_z high + price falling, short if liq_short_z high + price rising | Skewed liquidations with directional price confirmation | `liq_z > 2.5`, other side `< 1.0`, `price_chg < -1%` (long) / `price_chg > 1%` (short) |
+| **fund_mean_revert** | short if fund_z > 1.5 + sustained, long if fund_z < -1.5 + sustained | Sustained funding extreme (3 bars) predicts mean reversion. Requires `has_fund_sustained = true` (≥3 bars history); silently skipped otherwise | `\|fund_z\| > 1.5` (FUND_Z_MEAN_REVERT), all 3 prior bars `\|fund_z\| > 1.0` (FUND_Z_SUSTAINED), trend ≠ signal direction |
 
 ### 3.2 Disabled Signals (8)
 
@@ -148,7 +148,7 @@ div_top_1d           — earlier OI drop detection
 ```
 overheat, div_squeeze_1d, div_squeeze_3d, distribution, overextension,
 oi_buildup_stall, capitulation, vol_divergence, fund_reversal,
-fund_spike, liq_ratio_extreme
+fund_spike, liq_ratio_extreme, fund_mean_revert
 ```
 
 Note: `div_squeeze_3d` stays on daily — 4h detection degrades it from +4.59% to -0.85%.
@@ -253,6 +253,7 @@ Each signal type is routed to the exit strategy that performed best in 3-year ba
 | liq_short_squeeze | counter_sig | +3.54% | 56% | 81 |
 | vol_divergence | counter_sig | +3.76% | 100% | 3 |
 | fund_reversal | zscore_mr | +3.60% | 50% | 3 |
+| **fund_mean_revert** | **counter_sig** | **+3.18%** | **65.7%** | **134** |
 | div_squeeze_3d | counter_sig | +2.11% | 50% | 18 |
 | distribution | fixed | +1.85% | 61% | 23 |
 | momentum_divergence | counter_sig | +1.72% | 57% | 82 |
@@ -271,8 +272,8 @@ Each signal type is routed to the exit strategy that performed best in 3-year ba
 Wait for a counter-signal (opposite direction signal fires), with hard stop and max hold.
 - **Hard stop:** 12% (not 8% — saves trades that recover)
 - **Max hold:** 30 days (timeout at current PnL)
-- **Counter signals for long:** overheat, fund_spike, distribution, overextension, div_top_1d, momentum_divergence, volume_spike*
-- **Counter signals for short:** capitulation, liq_flush*, liq_short_squeeze, vol_divergence, momentum_divergence, volume_spike*, liq_ratio_extreme
+- **Counter signals for long:** overheat, fund_spike, distribution, overextension, div_top_1d, momentum_divergence, fund_mean_revert, volume_spike*
+- **Counter signals for short:** capitulation, liq_flush*, liq_short_squeeze, vol_divergence, momentum_divergence, liq_ratio_extreme, fund_mean_revert, volume_spike*
 - *\* Disabled for detection but still active in counter-signal cache (can trigger exits for open positions)*
 
 #### fixed
@@ -329,6 +330,7 @@ Trend-alignment filter: long only in uptrend, short only in downtrend, neutral a
 - `distribution` — shorts in uptrend
 - `momentum_divergence` — trades against price momentum
 - `fund_spike` — shorts into funding extremes
+- `fund_mean_revert` — fades sustained funding extremes
 
 ### 7.4 Position Sizing
 
@@ -371,18 +373,19 @@ Based on price vs SMA:
 
 ## 9. Backtest Results
 
-### 9.1 HL Hybrid C + Adaptive (Production Config — 860 trades)
+### 9.1 HL Hybrid C + fund_mean_revert + Adaptive (Production Config — 994 trades)
 
 | Metric | Value |
 |--------|-------|
 | Period | Mar 2023 — Mar 2026 |
 | Symbols | 30 (HL set) |
-| Total trades | 860 |
-| Win rate | 50.0% |
-| EV per trade (net) | +1.45% |
-| Profit Factor | 1.64x |
-| Total PnL | +1,246% |
+| Total trades | 994 |
+| Win rate | 52.4% |
+| EV per trade (net) | +1.94% |
+| Total PnL | +1,827% |
 | Walk-Forward | 6/6 positive, avg +1.60% |
+
+Hybrid C baseline (860 trades, WR 50.0%, EV +1.45%, PnL +1,246%) — fund_mean_revert adds +134 signals.
 
 ### 9.2 Per-Signal Performance (HL Hybrid C + adaptive)
 
@@ -399,6 +402,7 @@ Based on price vs SMA:
 | vol_divergence | 3 | 66.7% | +0.05% | counter_sig | +0.2% | daily |
 | div_squeeze_3d | 78 | 48.7% | -0.85% | counter_sig | -66% | daily |
 | fund_reversal | 1 | 0.0% | -7.07% | zscore_mr | -7% | daily |
+| **fund_mean_revert** | **134** | **65.7%** | **+3.18%** | **counter_sig** | — | **daily** |
 
 ### 9.2b Per-Signal: Daily-Only Reference
 
@@ -492,7 +496,8 @@ Based on price vs SMA:
 | Phase A (new signals) | 441 | 49.9% | +1.58% | 3yr |
 | Phase B (old symbols) | 509 | 52.5% | +1.35% | 3yr |
 | HL daily | 528 | 52.3% | +1.52% | 3yr |
-| **HL Hybrid C (final)** | **860** | **50.0%** | **+1.45%** | **3yr** |
+| HL Hybrid C | 860 | 50.0% | +1.45% | 3yr |
+| **+ fund_mean_revert** | **994** | **52.4%** | **+1.94%** | **3yr** |
 
 ---
 
@@ -542,3 +547,4 @@ Based on price vs SMA:
 10. **div_top_1d** flips from -1.12% (daily) to +1.08% (4h/Hybrid C). Quality depends on detection timeframe.
 11. **fund_reversal insufficient sample.** Only 1 trade on HL set. Routing to zscore_mr is not statistically validated.
 12. **860 trades total but some types sparse.** vol_divergence (3), oi_buildup_stall (4), fund_reversal (1). Their routing is less robust.
+13. **fund_mean_revert WF test N=19.** Walk-forward test window had only 19 trades, EV -0.62%. Insufficient to confirm robustness across market regimes — monitor live performance.
